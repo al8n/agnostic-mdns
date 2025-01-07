@@ -21,6 +21,9 @@ const MAX_PAYLOAD_SIZE: usize = 9000;
 pub mod client;
 pub mod server;
 
+mod types;
+pub use types::{DNSClass, RecordData, RecordHeader, UnknownRecordType, UnknownRecordTypeStr};
+
 mod zone;
 pub use zone::*;
 

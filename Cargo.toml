@@ -7,7 +7,7 @@ homepage = "https://github.com/al8n/agnostic-mdns"
 documentation = "https://docs.rs/agnostic-mdns"
 description = "A template for creating Rust open-source repo on GitHub"
 license = "MIT OR Apache-2.0"
-rust-version = "1.73"
+rust-version = "1.76"
 
 [[bench]]
 path = "benches/foo.rs"
@@ -23,6 +23,7 @@ std = []
 agnostic = { version = "0.4", features = ["dns", "net"] }
 atomic_refcell = "0.1"
 async-channel = "2"
+bitflags = "2"
 either = "1"
 futures-util = "0.3"
 smol_str = "0.3"
@@ -34,6 +35,11 @@ hickory-proto = { version = "0.24", features = ["mdns"] }
 
 tracing = "0.1"
 
+[target.'cfg(unix)'.dependencies]
+rustix = { version = "0.38", features = ["system"] }
+
+[target.'cfg(windows)'.dependencies]
+hostname = "0.4"
 
 [dev-dependencies]
 paste = "1"

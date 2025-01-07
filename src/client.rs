@@ -16,26 +16,26 @@ use agnostic::{
 use async_channel::Sender;
 use atomic_refcell::AtomicRefCell;
 use futures_util::FutureExt;
-use hickory_proto::{
-  op::{Message, Query},
-  rr::{Name, RData, RecordType},
-  serialize::binary::BinEncodable,
-};
-use smol_str::SmolStr;
+use smallvec_wrapper::OneOrMore;
+// use hickory_proto::{
+//   op::{Message, Query},
+//   rr::{RData, RecordType},
+// };
+use smol_str::{format_smolstr, SmolStr};
 use triomphe::Arc;
 
-use crate::{IPV4_MDNS, IPV6_MDNS, MAX_PAYLOAD_SIZE, MDNS_PORT};
+use crate::{types::{Question, Name, RecordData, RecordType, Record, Message}, IPV4_MDNS, IPV6_MDNS, MAX_PAYLOAD_SIZE, MDNS_PORT};
 
 pub use async_channel::{Receiver, Recv, TryRecvError};
 
 /// Returned after we query for a service.
 #[derive(Debug, Clone)]
 pub struct ServiceEntry {
-  name: Arc<Name>,
-  host: Arc<Name>,
+  name: Name,
+  host: Name,
   socket_v4: Option<SocketAddrV4>,
   socket_v6: Option<SocketAddrV6>,
-  infos: Arc<Vec<SmolStr>>,
+  infos: Arc<OneOrMore<SmolStr>>,
 }
 
 impl ServiceEntry {
@@ -87,13 +87,13 @@ impl ServiceEntry {
 /// Returned after we query for a service.
 #[derive(Default, Clone)]
 struct ServiceEntryBuilder {
-  name: Arc<Name>,
-  host: Arc<Name>,
+  name: Name,
+  host: Name,
   port: u16,
   ipv4: Option<Ipv4Addr>,
   ipv6: Option<Ipv6Addr>,
   zone: Option<u32>,
-  infos: Arc<Vec<SmolStr>>,
+  infos: Arc<OneOrMore<SmolStr>>,
 
   has_txt: bool,
   sent: bool,
@@ -105,7 +105,7 @@ impl ServiceEntryBuilder {
   }
 
   #[inline]
-  fn with_name(mut self, name: Arc<Name>) -> Self {
+  fn with_name(mut self, name: Name) -> Self {
     self.name = name;
     self
   }
@@ -145,7 +145,7 @@ impl QueryParam {
   pub fn new(service: Name) -> Self {
     Self {
       service,
-      domain: Name::from_str("local").unwrap(),
+      domain: Name::local(),
       timeout: Duration::from_secs(1),
       ipv4_interface: Ipv4Addr::UNSPECIFIED,
       ipv6_interface: 0,
@@ -295,14 +295,9 @@ where
     }
   });
 
-  let service = params
-    .service
-    .append_domain(&params.domain)
-    .expect("failed to append domain");
-
   client
     .query_in(
-      service,
+      params.service.append_fqdn(&params.domain),
       params.want_unicast_response,
       params.timeout,
       producer.0,
@@ -378,22 +373,9 @@ impl<R: Runtime> Client<R> {
     }
 
     // Send the query
-    let mut message = Message::new();
-    let mut q = Query::new();
-    q.set_name(service).set_query_type(RecordType::PTR);
+    let q = Question::new(service, want_unicast_response);
 
-    // RFC 6762, section 18.12.  Repurposing of Top Bit of qclass in Question
-    // Section
-    //
-    // In the Question Section of a Multicast DNS query, the top bit of the qclass
-    // field is used to indicate that unicast responses are preferred for this
-    // particular question.  (See Section 5.4.)
-    if want_unicast_response {
-      q.set_query_class((1 | (1 << 15)).into());
-    }
-    message.add_query(q).set_recursion_desired(false);
-
-    self.send_query(message).await?;
+    self.send_query(q).await?;
 
     // Map the in-progress responses
     let mut inprogress = HashMap::new();
@@ -405,115 +387,102 @@ impl<R: Runtime> Client<R> {
     loop {
       futures_util::select! {
         resp = msg_rx.recv().fuse() => {
-          if let Ok((mut msg, src_addr)) = resp {
-            let answers = mem::take(msg.answers_mut());
-            let additionals = mem::take(msg.additionals_mut());
+          if let Ok((msg, src_addr)) = resp {
+            let records = msg.into_iter();
             let mut inp = None;
-            for answer in answers.into_iter().chain(additionals.into_iter()) {
+            for record in records {
               // TODO(reddaly): Check that response corresponds to serviceAddr?
-              let parts = answer.into_parts();
-              if let Some(data) = parts.rdata {
-                match data {
-                  RData::PTR(data) => {
-                    // Create new entry for this
-                    let ent = ensure_name(&mut inprogress, Arc::new(data.0));
-                    inp = Some(ent);
-                  },
-                  RData::SRV(data) => {
-                    let name = Arc::new(parts.name_labels);
-                    // Check for a target mismatch
-                    if data.target().ne(&name) {
-                      alias(&mut inprogress, name.clone(), Arc::new(data.target().clone()));
+              let (header, data) = record.into_components();
+              match data {
+                RecordData::PTR(data) => {
+                  // Create new entry for this
+                  let ent = ensure_name(&mut inprogress, data);
+                  inp = Some(ent);
+                },
+                RecordData::SRV(data) => {
+                  let name = header.name().clone();
+                  // Check for a target mismatch
+                  if data.target().ne(&name) {
+                    alias(&mut inprogress, name.clone(), data.target().clone());
 
-                      // Get the port
-                      let ent = ensure_name(&mut inprogress, name);
-                      let mut ref_mut = ent.borrow_mut();
-                      ref_mut.host = Arc::new(data.target().clone());
-                      ref_mut.port = data.port();
-                    } else {
-                      // Get the port
-                      let ent = ensure_name(&mut inprogress, name.clone());
-                      let mut ref_mut = ent.borrow_mut();
-                      ref_mut.host = Arc::new(data.target().clone());
-                      ref_mut.port = data.port();
-                    }
-                  },
-                  RData::TXT(data) => {
-                    let name = Arc::new(parts.name_labels);
-                    // Pull out the txt
+                    // Get the port
                     let ent = ensure_name(&mut inprogress, name);
                     let mut ref_mut = ent.borrow_mut();
-                    let mut txts = Vec::with_capacity(data.txt_data().len());
-                    for txt in data.iter() {
-                      let txt = core::str::from_utf8(txt).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
-                      txts.push(SmolStr::new(txt))
-                    }
-                    ref_mut.infos = Arc::new(txts);
-                    ref_mut.has_txt = true;
-                    drop(ref_mut);
-                    inp = Some(ent);
-                  },
-                  RData::A(data) => {
-                    let name = Arc::new(parts.name_labels);
-                    // Pull out the IP
-                    let ent = ensure_name(&mut inprogress, name);
+                    ref_mut.host = data.target().clone();
+                    ref_mut.port = data.port();
+                  } else {
+                    // Get the port
+                    let ent = ensure_name(&mut inprogress, name.clone());
                     let mut ref_mut = ent.borrow_mut();
-                    ref_mut.ipv4 = Some(data.0);
-                    drop(ref_mut);
-                    inp = Some(ent);
-                  },
-                  RData::AAAA(data) => {
-                    let name = Arc::new(parts.name_labels);
-                    // Pull out the IP
-                    let ent = ensure_name(&mut inprogress, name);
-                    let mut ref_mut = ent.borrow_mut();
-                    ref_mut.ipv6 = Some(data.0);
-                    // link-local IPv6 addresses must be qualified with a zone (interface). Zone is
-                    // specific to this machine/network-namespace and so won't be carried in the
-                    // mDNS message itself. We borrow the zone from the source address of the UDP
-                    // packet, as the link-local address should be valid on that interface.
-                    if Ipv6AddrExt::is_unicast_link_local(&data.0) || data.0.is_multicast_link_local() {
-                      if let SocketAddr::V6(addr) = src_addr {
-                        let zone = addr.scope_id();
-                        ref_mut.zone = Some(zone);
-                      }
-                    }
-                    drop(ref_mut);
-                    inp = Some(ent);
-                  },
-                  _ => {},
-                }
-
-                match inp {
-                  None => continue,
-                  Some(ref ent) => {
-                    // Check if this entry is complete
-                    let mut ref_mut = ent.borrow_mut();
-                    if ref_mut.complete() {
-                      if ref_mut.sent {
-                        continue;
-                      }
-                      ref_mut.sent = true;
-                      let entry = ref_mut.finalize();
-
-                      futures_util::select! {
-                        _ = tx.send(entry).fuse() => {},
-                        default => {},
-                      }
-                    } else {
-                      // Fire off a node specific query
-                      let mut message = Message::new();
-                      let mut q = Query::new();
-                      q.set_name((*ref_mut.name).clone())
-                      .set_query_type(RecordType::PTR);
-                      message.add_query(q).set_recursion_desired(false);
-                      self.send_query(message).await.inspect_err(|e| {
-                        tracing::error!(err=%e, "mdns: failed to query instance {}", ref_mut.name);
-                      })?;
-                    }
-
-                    drop(ref_mut);
+                    ref_mut.port = data.port();
+                    ref_mut.host = data.into_target();
                   }
+                },
+                RecordData::TXT(data) => {
+                  let name = header.name().clone();
+                  // Pull out the txt
+                  let ent = ensure_name(&mut inprogress, name);
+                  let mut ref_mut = ent.borrow_mut();
+                  ref_mut.infos = Arc::new(data);
+                  ref_mut.has_txt = true;
+                  drop(ref_mut);
+                  inp = Some(ent);
+                },
+                RecordData::A(data) => {
+                  let name = header.name().clone();
+                  // Pull out the IP
+                  let ent = ensure_name(&mut inprogress, name);
+                  let mut ref_mut = ent.borrow_mut();
+                  ref_mut.ipv4 = Some(data);
+                  drop(ref_mut);
+                  inp = Some(ent);
+                },
+                RecordData::AAAA(data) => {
+                  let name = header.name().clone();
+                  // Pull out the IP
+                  let ent = ensure_name(&mut inprogress, name);
+                  let mut ref_mut = ent.borrow_mut();
+                  ref_mut.ipv6 = Some(data);
+                  // link-local IPv6 addresses must be qualified with a zone (interface). Zone is
+                  // specific to this machine/network-namespace and so won't be carried in the
+                  // mDNS message itself. We borrow the zone from the source address of the UDP
+                  // packet, as the link-local address should be valid on that interface.
+                  if Ipv6AddrExt::is_unicast_link_local(&data) || data.is_multicast_link_local() {
+                    if let SocketAddr::V6(addr) = src_addr {
+                      let zone = addr.scope_id();
+                      ref_mut.zone = Some(zone);
+                    }
+                  }
+                  drop(ref_mut);
+                  inp = Some(ent);
+                },
+              }
+
+              match inp {
+                None => continue,
+                Some(ref ent) => {
+                  // Check if this entry is complete
+                  let mut ref_mut = ent.borrow_mut();
+                  if ref_mut.complete() {
+                    if ref_mut.sent {
+                      continue;
+                    }
+                    ref_mut.sent = true;
+                    let entry = ref_mut.finalize();
+
+                    futures_util::select! {
+                      _ = tx.send(entry).fuse() => {},
+                      default => {},
+                    }
+                  } else {
+                    // Fire off a node specific query
+                    let question = Question::new(ref_mut.name.clone(), false);
+                    self.send_query(question).await.inspect_err(|e| {
+                      tracing::error!(err=%e, "mdns: failed to query instance {}", ref_mut.name);
+                    })?;
+                  }
+
+                  drop(ref_mut);
                 }
               }
             }
@@ -526,9 +495,9 @@ impl<R: Runtime> Client<R> {
     }
   }
 
-  async fn send_query(&self, message: Message) -> io::Result<()> {
-    let buf = message
-      .to_bytes()
+  async fn send_query(&self, question: Question) -> io::Result<()> {
+    let buf = question
+      .encode()
       .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
 
     if let Some(conn) = &self.ipv4_multicast_conn {
@@ -691,7 +660,7 @@ impl<R: Runtime> PacketReceiver<R> {
         res = self.conn.recv_from(&mut buf).fuse() => {
           match res {
             Ok((size, src)) => {
-              let msg = match Message::from_vec(&buf[..size]) {
+              let msg = match Message::decode(&buf[..size]) {
                 Ok(msg) => msg,
                 Err(e) => {
                   tracing::error!(err=%e, "mdns: failed to deserialize packet");
@@ -715,8 +684,8 @@ impl<R: Runtime> PacketReceiver<R> {
 }
 
 fn ensure_name(
-  inprogress: &mut HashMap<Arc<Name>, Arc<AtomicRefCell<ServiceEntryBuilder>>>,
-  name: Arc<Name>,
+  inprogress: &mut HashMap<Name, Arc<AtomicRefCell<ServiceEntryBuilder>>>,
+  name: Name,
 ) -> Arc<AtomicRefCell<ServiceEntryBuilder>> {
   match inprogress.entry(name.clone()) {
     Entry::Occupied(occupied_entry) => occupied_entry.into_mut().clone(),
@@ -729,9 +698,9 @@ fn ensure_name(
 }
 
 fn alias(
-  inprogress: &mut HashMap<Arc<Name>, Arc<AtomicRefCell<ServiceEntryBuilder>>>,
-  src: Arc<Name>,
-  dst: Arc<Name>,
+  inprogress: &mut HashMap<Name, Arc<AtomicRefCell<ServiceEntryBuilder>>>,
+  src: Name,
+  dst: Name,
 ) {
   let src_ent = match inprogress.entry(src.clone()) {
     Entry::Occupied(occupied_entry) => occupied_entry.into_mut(),

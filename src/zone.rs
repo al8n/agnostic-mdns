@@ -2,7 +2,7 @@ use core::{
   convert::Infallible, error::Error, future::Future, marker::PhantomData, net::IpAddr, str::FromStr,
 };
 
-use std::{borrow::Cow, net::ToSocketAddrs, vec::Vec};
+use std::{net::ToSocketAddrs, vec::Vec};
 
 use agnostic::Runtime;
 use hickory_proto::rr::{
@@ -31,126 +31,6 @@ pub enum ServiceError {
   /// Not a fully qualified domain name
   #[error("{0} is not a fully qualified domain name")]
   NotFQDN(Name),
-}
-
-/// Holds a DNS question. Usually there is just one. While the
-/// original DNS RFCs allow multiple questions in the question section of a
-/// message, in practice it never works. Because most DNS servers see multiple
-/// questions as an error, it is recommended to only have one question per
-/// message.
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct Question<'a> {
-  name: Cow<'a, Name>,
-  qtype: RecordType,
-}
-
-impl<'a> Question<'a> {
-  /// Create a new question.
-  #[inline]
-  pub const fn new(name: Name, qtype: RecordType) -> Self {
-    Self {
-      name: Cow::Owned(name),
-      qtype,
-    }
-  }
-
-  /// Create a borrowed question.
-  #[inline]
-  pub const fn borrowed(name: &'a Name, qtype: RecordType) -> Self {
-    Self {
-      name: Cow::Borrowed(name),
-      qtype,
-    }
-  }
-
-  /// Create a new question for IPv4.
-  #[inline]
-  pub const fn ipv4(name: Name) -> Self {
-    Self::new(name, RecordType::A)
-  }
-
-  /// Create a new question for IPv4 with borrowed name.
-  #[inline]
-  pub const fn ipv4_borrowed(name: &'a Name) -> Self {
-    Self::borrowed(name, RecordType::A)
-  }
-
-  /// Create a new question for IPv6.
-  #[inline]
-  pub const fn ipv6(name: Name) -> Self {
-    Self::new(name, RecordType::AAAA)
-  }
-
-  /// Create a new question for IPv6 with borrowed name.
-  #[inline]
-  pub const fn ipv6_borrowed(name: &'a Name) -> Self {
-    Self::borrowed(name, RecordType::AAAA)
-  }
-
-  /// Create a new question for TXT.
-  #[inline]
-  pub const fn txt(name: Name) -> Self {
-    Self::new(name, RecordType::TXT)
-  }
-
-  /// Create a new question for TXT with borrowed name.
-  pub const fn txt_borrowed(name: &'a Name) -> Self {
-    Self::borrowed(name, RecordType::TXT)
-  }
-
-  /// Create a new question for SRV.
-  #[inline]
-  pub const fn srv(name: Name) -> Self {
-    Self::new(name, RecordType::SRV)
-  }
-
-  /// Create a new question for SRV with borrowed name.
-  #[inline]
-  pub const fn srv_borrowed(name: &'a Name) -> Self {
-    Self::borrowed(name, RecordType::SRV)
-  }
-
-  /// Create a new question for PTR.
-  #[inline]
-  pub const fn ptr(name: Name) -> Self {
-    Self::new(name, RecordType::PTR)
-  }
-
-  /// Create a new question for PTR with borrowed name.
-  #[inline]
-  pub const fn ptr_borrowed(name: &'a Name) -> Self {
-    Self::borrowed(name, RecordType::PTR)
-  }
-
-  /// Create a new question for ANY.
-  #[inline]
-  pub const fn any(name: Name) -> Self {
-    Self::new(name, RecordType::ANY)
-  }
-
-  /// Create a new question for ANY with borrowed name.
-  #[inline]
-  pub const fn any_borrowed(name: &'a Name) -> Self {
-    Self::borrowed(name, RecordType::ANY)
-  }
-
-  /// Returns the name of the question.
-  #[inline]
-  pub fn name(&'a self) -> &'a Name {
-    self.name.as_ref()
-  }
-
-  /// Returns the type of the question.
-  #[inline]
-  pub const fn qtype(&self) -> RecordType {
-    self.qtype
-  }
-
-  /// Consumes the question and returns the name and type.
-  #[inline]
-  pub fn into_components(self) -> (Cow<'a, Name>, RecordType) {
-    (self.name, self.qtype)
-  }
 }
 
 /// The interface used to integrate with the server and
