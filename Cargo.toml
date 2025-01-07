@@ -1,0 +1,47 @@
+[package]
+name = "template-rs"
+version = "0.0.0"
+edition = "2021"
+repository = "https://github.com/al8n/template-rs"
+homepage = "https://github.com/al8n/template-rs"
+documentation = "https://docs.rs/template-rs"
+description = "A template for creating Rust open-source repo on GitHub"
+license = "MIT OR Apache-2.0"
+rust-version = "1.73"
+
+[[bench]]
+path = "benches/foo.rs"
+name = "foo"
+harness = false
+
+[features]
+default = ["std"]
+alloc = []
+std = []
+
+[dependencies]
+
+[dev-dependencies]
+criterion = "0.5"
+tempfile = "3"
+
+[profile.bench]
+opt-level = 3
+debug = false
+codegen-units = 1
+lto = 'thin'
+incremental = false
+debug-assertions = false
+overflow-checks = false
+rpath = false
+
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]
+
+[lints.rust]
+rust_2018_idioms = "warn"
+single_use_lifetimes = "warn"
+unexpected_cfgs = { level = "warn", check-cfg = [
+  'cfg(all_tests)',
+] }
