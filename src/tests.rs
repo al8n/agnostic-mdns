@@ -1,9 +1,8 @@
 use core::{future::Future, str::FromStr};
 
 use agnostic::Runtime;
-use hickory_proto::rr::Name;
 
-use crate::{Service, ServiceBuilder};
+use crate::{Service, ServiceBuilder, types::Name};
 
 macro_rules! test_suites {
   ($runtime:ident {
@@ -30,11 +29,11 @@ pub(crate) async fn make_service<R: Runtime>() -> Service<R> {
 
 pub(crate) async fn make_service_with_service_name<R: Runtime>(name: &str) -> Service<R> {
   ServiceBuilder::new(
-    Name::from_str("testhost.").unwrap(),
-    Name::from_str("hostname").unwrap(),
-    name.parse().unwrap(),
+    Name::from("testhost."),
+    Name::from("hostname"),
+    name.into(),
   )
-  .with_domain("local.".parse().unwrap())
+  .with_domain("local.".into())
   .with_port(80)
   .with_ip("192.168.0.42".parse().unwrap())
   .with_ip("2620:0:1000:1900:b0c2:d0b2:c411:18bc".parse().unwrap())

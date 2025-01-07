@@ -9,16 +9,12 @@ use async_channel::{Receiver, Sender};
 use atomic_refcell::AtomicRefCell;
 use either::Either;
 use futures_util::{stream::FuturesUnordered, FutureExt, StreamExt as _};
-use hickory_proto::{
-  error::ProtoError,
-  op::{Header, Message, MessageType, OpCode, Query, ResponseCode},
-  rr::Record,
-};
-use smallvec_wrapper::OneOrMore;
+use smallvec_wrapper::{MediumVec, OneOrMore};
 use triomphe::Arc;
 
 use super::{
   utils::{multicast_udp4_socket, multicast_udp6_socket},
+  types::{Message, Answer, EncodeError, Record, Query, OP_CODE_QUERY, RESPONSE_CODE_NO_ERROR},
   Service, Zone, IPV4_MDNS, IPV6_MDNS, MAX_PAYLOAD_SIZE, MDNS_PORT,
 };
 
@@ -237,7 +233,7 @@ impl<R: Runtime, Z: Zone> Processor<R, Z> {
             }
           };
 
-          let msg = match Message::from_vec(&buf[..len]) {
+          let msg = match Message::decode(&buf[..len]) {
             Ok(msg) => msg,
             Err(e) => {
               tracing::error!(err=%e, "mdns: failed to unpack packet");
@@ -253,20 +249,20 @@ impl<R: Runtime, Z: Zone> Processor<R, Z> {
   }
 
   async fn handle_query(&self, from: SocketAddr, query: Message) {
-    if query.op_code() != OpCode::Query {
+    if query.header.opcode != OP_CODE_QUERY {
       // "In both multicast query and multicast response messages, the OPCODE MUST
       // be zero on transmission (only standard queries are currently supported
       // over multicast).  Multicast DNS messages received with an OPCODE other
       // than zero MUST be silently ignored."  Note: OpcodeQuery == 0
-      tracing::error!("mdns: received query with non-zero OpCode");
+      tracing::error!(opcode = %query.header.opcode, "mdns: received query with non-zero OpCode");
       return;
     }
 
-    if query.response_code() != ResponseCode::NoError {
+    if query.header.response_code != RESPONSE_CODE_NO_ERROR {
       // "In both multicast query and multicast response messages, the Response
       // Code MUST be zero on transmission.  Multicast DNS messages received with
       // non-zero Response Codes MUST be silently ignored."
-      tracing::error!("mdns: received query with non-zero ResponseCode");
+      tracing::error!(response_code = %query.header.response_code, "mdns: received query with non-zero ResponseCode");
       return;
     }
 
@@ -276,8 +272,8 @@ impl<R: Runtime, Z: Zone> Processor<R, Z> {
     //    record this fact, and wait for those additional Known-Answer records,
     //    before deciding whether to respond.  If the TC bit is clear, it means
     //    that the querying host has no additional Known Answers.
-    if query.header().truncated() {
-      tracing::error!(query=%query, "mdns: support for DNS requests with high truncated bit not implemented");
+    if query.header.truncated {
+      tracing::error!("mdns: support for DNS requests with high truncated bit not implemented");
       return;
     }
 
@@ -285,7 +281,7 @@ impl<R: Runtime, Z: Zone> Processor<R, Z> {
     let mut unicast_answers = OneOrMore::new();
 
     // Handle each query
-    let queries = query.queries();
+    let queries = query.questions();
     for query in queries {
       match self.handle_question(query).await {
         Ok((mrecs, urecs)) => {
@@ -293,16 +289,17 @@ impl<R: Runtime, Z: Zone> Processor<R, Z> {
           unicast_answers.extend(urecs)
         }
         Err(e) => {
-          tracing::error!(query=%query, err=%e, "mdns: fail to handle query");
+          // query=%query,
+          tracing::error!( err=%e, "mdns: fail to handle query");
         }
       }
     }
 
     if self.log_empty_responses && multicast_answers.is_empty() && unicast_answers.is_empty() {
-      let mut questions: Vec<_> = Vec::with_capacity(queries.len());
+      let mut questions = MediumVec::with_capacity(queries.len());
 
       for query in queries {
-        questions.push(query.name().to_utf8());
+        questions.push(query.name().as_str());
       }
 
       tracing::info!(
@@ -312,7 +309,7 @@ impl<R: Runtime, Z: Zone> Processor<R, Z> {
     }
 
     // See section 18 of RFC 6762 for rules about DNS headers.
-    let resp = |answers: OneOrMore<Record>, unicast: bool| -> Option<Message> {
+    let resp = |answers: OneOrMore<Record>, unicast: bool| -> Option<Answer> {
       // 18.1: ID (Query Identifier)
       // 0 for multicast response, query.Id for unicast response
       let mut id = 0;
@@ -324,25 +321,26 @@ impl<R: Runtime, Z: Zone> Processor<R, Z> {
         return None;
       }
 
-      let mut msg = Message::new();
-      let mut hdr = Header::new();
-      hdr
-        .set_id(id)
-        // 18.3: OPCODE - must be zero in response (OpcodeQuery == 0)
-        .set_op_code(OpCode::Query)
-        // 18.4: AA (Authoritative Answer) Bit - must be set to 1
-        .set_authoritative(true)
-        // 18.2: QR (Query/Response) Bit - must be set to 1 in response.
-        .set_message_type(MessageType::Response);
-      // The following fields must all be set to 0:
-      // 18.5: TC (TRUNCATED) Bit
-      // 18.6: RD (Recursion Desired) Bit
-      // 18.7: RA (Recursion Available) Bit
-      // 18.8: Z (Zero) Bit
-      // 18.9: AD (Authentic Data) Bit
-      // 18.10: CD (Checking Disabled) Bit
-      // 18.11: RCODE (Response Code)
-      msg.set_header(hdr).add_answers(answers);
+      // let mut msg = Message::new();
+      // let mut hdr = Header::new();
+      // hdr
+      //   .set_id(id)
+      //   // 18.3: OPCODE - must be zero in response (OpcodeQuery == 0)
+      //   .set_op_code(OpCode::Query)
+      //   // 18.4: AA (Authoritative Answer) Bit - must be set to 1
+      //   .set_authoritative(true)
+      //   // 18.2: QR (Query/Response) Bit - must be set to 1 in response.
+      //   .set_message_type(MessageType::Response);
+      // // The following fields must all be set to 0:
+      // // 18.5: TC (TRUNCATED) Bit
+      // // 18.6: RD (Recursion Desired) Bit
+      // // 18.7: RA (Recursion Available) Bit
+      // // 18.8: Z (Zero) Bit
+      // // 18.9: AD (Authentic Data) Bit
+      // // 18.10: CD (Checking Disabled) Bit
+      // // 18.11: RCODE (Response Code)
+      // msg.set_header(hdr).add_answers(answers);
+      let msg = Answer::new(id, answers);
       Some(msg)
     };
 
@@ -375,13 +373,13 @@ impl<R: Runtime, Z: Zone> Processor<R, Z> {
     // yet fully compliant with RFC 6762.  For example, the unicast bit should be
     // ignored if the records in question are close to TTL expiration.  For now,
     // we just use the unicast bit to make the decision, as per the spec:
-    //     RFC 6762, section 18.12.  Repurposing of Top Bit of qclass in Question
+    //     RFC 6762, section 18.12.  Repurposing of Top Bit of qclass in Query
     //     Section
     //
-    //     In the Question Section of a Multicast DNS query, the top bit of the
+    //     In the Query Section of a Multicast DNS query, the top bit of the
     //     qclass field is used to indicate that unicast responses are preferred
     //     for this particular question.  (See Section 5.4.)
-    let qc: u16 = query.query_class().into();
+    let qc = query.query_class() as u16;
     let res = if (qc & (1 << 15)) != 0 || FORCE_UNICAST_RESPONSES {
       (OneOrMore::new(), records)
     } else {
@@ -393,14 +391,14 @@ impl<R: Runtime, Z: Zone> Processor<R, Z> {
 
   async fn send_response(
     &self,
-    msg: Message,
+    msg: Answer,
     from: SocketAddr,
     _unicast: bool,
-  ) -> Result<usize, Either<ProtoError, io::Error>> {
+  ) -> Result<usize, Either<EncodeError, io::Error>> {
     // TODO(reddaly): Respect the unicast argument, and allow sending responses
     // over multicast.
 
-    let data = msg.to_vec().map_err(Either::Left)?;
+    let data = msg.encode().map_err(Either::Left)?;
     self.conn.send_to(&data, from).await.map_err(Either::Right)
   }
 }

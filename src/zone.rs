@@ -1,13 +1,15 @@
 use core::{
-  convert::Infallible, error::Error, future::Future, marker::PhantomData, net::IpAddr, str::FromStr,
+  convert::Infallible, error::Error, future::Future, marker::PhantomData, net::IpAddr,
 };
 
 use std::{net::ToSocketAddrs, vec::Vec};
 
 use agnostic::Runtime;
-use hickory_proto::rr::{
-  rdata::{A, AAAA, PTR, SRV, TXT},
-  Name, RData, Record, RecordType,
+use smol_str::{format_smolstr, SmolStr};
+use triomphe::Arc;
+use super::types::{
+  SRV,
+  Name, RecordData, Record, RecordType,
 };
 use smallvec_wrapper::{OneOrMore, TinyVec};
 
@@ -79,7 +81,7 @@ pub struct ServiceBuilder {
   hostname: Name,
   port: Option<u16>,
   ips: TinyVec<IpAddr>,
-  txt: Vec<String>,
+  txt: Vec<SmolStr>,
   ttl: u32,
   srv_priority: u16,
   srv_weight: u16,
@@ -208,18 +210,18 @@ impl ServiceBuilder {
   }
 
   /// Gets the current TXT records.
-  pub fn txt_records(&self) -> &[String] {
+  pub fn txt_records(&self) -> &[SmolStr] {
     &self.txt
   }
 
   /// Sets the TXT records for the service.
-  pub fn with_txt_records(mut self, txt: Vec<String>) -> Self {
+  pub fn with_txt_records(mut self, txt: Vec<SmolStr>) -> Self {
     self.txt = txt;
     self
   }
 
   /// Pushes a TXT record to the list of TXT records.
-  pub fn with_txt_record(mut self, txt: String) -> Self {
+  pub fn with_txt_record(mut self, txt: SmolStr) -> Self {
     self.txt.push(txt);
     self
   }
@@ -237,7 +239,7 @@ impl ServiceBuilder {
     let domain = match self.domain {
       Some(domain) if !domain.is_fqdn() => return Err(ServiceError::NotFQDN(domain)),
       Some(domain) => domain,
-      None => Name::from_str("local.").expect("local. is a valid domain"),
+      None => Name::local_fqdn(),
     };
 
     let hostname = if !self.hostname.is_fqdn() {
@@ -255,14 +257,10 @@ impl ServiceBuilder {
       let tmp_hostname =
         hostname
           .clone()
-          .append_domain(&domain)
-          .map_err(|e| ServiceError::IpNotFound {
-            hostname: hostname.clone(),
-            error: e.into(),
-          })?;
+          .append(&domain);
 
       tmp_hostname
-        .to_utf8()
+        .as_str()
         .to_socket_addrs()
         .map_err(|e| ServiceError::IpNotFound {
           hostname: tmp_hostname,
@@ -274,32 +272,17 @@ impl ServiceBuilder {
       self.ips
     };
 
-    let service_addr = self
-      .service
-      .clone()
-      .append_name(&domain)
-      .expect("domain should be valid name");
-
-    let instance_addr = self
-      .instance
-      .clone()
-      .append_name(&self.service)
-      .expect("service should be valid name")
-      .append_domain(&domain)
-      .expect("domain should be valid name");
-
-    let enum_addr = Name::from_ascii("_services._dns-sd._udp")
-      .expect("_services._dns-sd._udp is a valid name")
-      .append_name(&domain)
-      .expect("domain should be valid");
+    let service_addr = format_smolstr!("{}.{}.", self.service.as_str().trim_matches('.'), domain.as_str().trim_matches('.'));
+    let instance_addr = format_smolstr!("{}.{}.{}.", self.instance.as_str().trim_matches('.'), self.service.as_str().trim_matches('.'), domain.as_str().trim_matches('.'));
+    let enum_addr = format_smolstr!("_services._dns-sd._udp.{}.", domain.as_str().trim_matches('.'));
 
     Ok(Service {
       port,
       ips,
-      txt: self.txt,
-      service_addr,
-      instance_addr,
-      enum_addr,
+      txt: Arc::from_iter(self.txt),
+      service_addr: Name::from_components(service_addr, true),
+      instance_addr: Name::from_components(instance_addr, true),
+      enum_addr: Name::from_components(enum_addr, true),
       instance: self.instance,
       service: self.service,
       domain,
@@ -327,7 +310,7 @@ pub struct Service<R> {
   /// IP addresses for the service's host
   ips: TinyVec<IpAddr>,
   /// Service TXT records
-  txt: Vec<String>,
+  txt: Arc<[SmolStr]>,
   /// Fully qualified service address
   service_addr: Name,
   /// Fully qualified instance address
@@ -400,7 +383,7 @@ impl<R> Service<R> {
 
   /// Returns the TXT records of the mdns service.
   #[inline]
-  pub fn txt_records(&self) -> &[String] {
+  pub fn txt_records(&self) -> &[SmolStr] {
     &self.txt
   }
 
@@ -409,7 +392,7 @@ impl<R> Service<R> {
       RecordType::ANY | RecordType::PTR => OneOrMore::from_buf([Record::from_rdata(
         name.clone(),
         self.ttl,
-        RData::PTR(PTR(self.service_addr.clone())),
+        RecordData::PTR(self.service_addr.clone()),
       )]),
       _ => OneOrMore::new(),
     }
@@ -422,7 +405,7 @@ impl<R> Service<R> {
         let rr = Record::from_rdata(
           name.clone(),
           self.ttl,
-          RData::PTR(PTR(self.instance_addr.clone())),
+          RecordData::PTR(self.instance_addr.clone()),
         );
 
         let mut recs = OneOrMore::from_buf([rr]);
@@ -449,7 +432,7 @@ impl<R> Service<R> {
         .ips
         .iter()
         .filter_map(|ip| match ip {
-          IpAddr::V4(ip) => Some(Record::from_rdata(name.clone(), self.ttl, RData::A(A(*ip)))),
+          IpAddr::V4(ip) => Some(Record::from_rdata(name.clone(), self.ttl, RecordData::A(*ip))),
           _ => None,
         })
         .collect(),
@@ -460,7 +443,7 @@ impl<R> Service<R> {
           IpAddr::V6(ip) => Some(Record::from_rdata(
             name.clone(),
             self.ttl,
-            RData::AAAA(AAAA(*ip)),
+            RecordData::AAAA(*ip),
           )),
           _ => None,
         })
@@ -470,7 +453,7 @@ impl<R> Service<R> {
         let rr = Record::from_rdata(
           name.clone(),
           self.ttl,
-          RData::SRV(SRV::new(
+          RecordData::SRV(SRV::new(
             self.srv_priority,
             self.srv_weight,
             self.port,
@@ -492,7 +475,7 @@ impl<R> Service<R> {
         let rr = Record::from_rdata(
           name.clone(),
           self.ttl,
-          RData::TXT(TXT::new(self.txt.clone())),
+          RecordData::TXT(self.txt.clone()),
         );
         OneOrMore::from_buf([rr])
       }

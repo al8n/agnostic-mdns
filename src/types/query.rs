@@ -3,14 +3,14 @@ use smallvec_wrapper::XXLargeVec;
 use super::{DNSClass, EncodeError, Name, RecordType, MESSAGE_HEADER_SIZE, QDCOUNT_OFFSET};
 
 
-pub(crate) struct Question {
+pub(crate) struct Query {
   name: Name,
   ty: RecordType,
   class: DNSClass,
   want_unicast_response: bool,
 }
 
-impl Question {
+impl Query {
   #[inline]
   pub const fn new(name: Name, want_unicast_response: bool) -> Self {
     Self {
@@ -19,6 +19,21 @@ impl Question {
       class: DNSClass::IN,
       want_unicast_response,
     }
+  }
+
+  #[inline]
+  pub const fn name(&self) -> &Name {
+    &self.name
+  }
+
+  #[inline]
+  pub const fn query_class(&self) -> DNSClass {
+    self.class
+  }
+
+  #[inline]
+  pub const fn query_type(&self) -> RecordType {
+    self.ty
   }
 
   #[inline]
@@ -35,10 +50,10 @@ impl Question {
     self.name.encode(&mut buf, off, &mut None)?;
     buf.extend_from_slice(&(self.ty as u16).to_be_bytes());
 
-    // RFC 6762, section 18.12.  Repurposing of Top Bit of qclass in Question
+    // RFC 6762, section 18.12.  Repurposing of Top Bit of qclass in Query
     // Section
     //
-    // In the Question Section of a Multicast DNS query, the top bit of the qclass
+    // In the Query Section of a Multicast DNS query, the top bit of the qclass
     // field is used to indicate that unicast responses are preferred for this
     // particular question.  (See Section 5.4.)
     let qclass = if self.want_unicast_response {

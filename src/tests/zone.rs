@@ -1,12 +1,8 @@
-use core::net::{Ipv4Addr, Ipv6Addr};
+use core::{net::{Ipv4Addr, Ipv6Addr}, panic};
 
-use hickory_proto::rr::{
-  rdata::{A, AAAA},
-  RData, Record, RecordType,
-};
 use smallvec_wrapper::OneOrMore;
 
-use crate::{tests::make_service, Zone};
+use crate::{tests::make_service, Zone, types::{RecordType, RecordData, Record, Name}};
 
 use super::*;
 
@@ -14,7 +10,7 @@ async fn bad_addr<R: Runtime>() {
   let s = make_service::<R>().await;
 
   let recs = s
-    .records(&Name::from_str("randome").unwrap(), RecordType::ANY)
+    .records(&Name::from("random"), RecordType::ANY)
     .await
     .unwrap();
   assert!(recs.is_empty(), "bad: {recs:?}");
@@ -24,21 +20,18 @@ async fn service_addr<R: Runtime>() {
   let s = make_service::<R>().await;
 
   let recs = s
-    .records(&"_http._tcp.local.".parse().unwrap(), RecordType::ANY)
+    .records(&"_http._tcp.local.".into(), RecordType::ANY)
     .await
     .unwrap();
   assert_eq!(recs.len(), 5, "bad: {recs:?}");
 
-  let ptr = recs[0].data().cloned().unwrap().into_ptr().unwrap();
-  assert_eq!(ptr.0, Name::from_str("hostname._http._tcp.local.").unwrap());
+  let RecordData::PTR(ptr) = recs[0].data() else { panic!("bad: {recs:?}") };
+  assert_eq!(ptr, &Name::from("hostname._http._tcp.local."));
 
-  recs[1].data().cloned().unwrap().into_srv().expect("SRV");
-
-  recs[2].data().cloned().unwrap().into_a().expect("A");
-
-  recs[3].data().cloned().unwrap().into_aaaa().expect("AAAA");
-
-  recs[4].data().cloned().unwrap().into_txt().expect("TXT");
+  matches!(recs[1].data(), RecordData::SRV(_));
+  matches!(recs[2].data(), RecordData::A(_));
+  matches!(recs[3].data(), RecordData::AAAA(_));
+  matches!(recs[4].data(), RecordData::TXT(_));
 }
 
 async fn instance_addr_any<R: Runtime>() {
@@ -46,20 +39,17 @@ async fn instance_addr_any<R: Runtime>() {
 
   let recs = s
     .records(
-      &"hostname._http._tcp.local.".parse().unwrap(),
+      &"hostname._http._tcp.local.".into(),
       RecordType::ANY,
     )
     .await
     .unwrap();
-  assert_eq!(recs.len(), 4, "bad: {recs:?}");
+  assert_eq!(recs.len(), 4, "bad: {recs:?}");  
 
-  recs[0].data().cloned().unwrap().into_srv().expect("SRV");
-
-  recs[1].data().cloned().unwrap().into_a().expect("A");
-
-  recs[2].data().cloned().unwrap().into_aaaa().expect("AAAA");
-
-  recs[3].data().cloned().unwrap().into_txt().expect("TXT");
+  matches!(recs[0].data(), RecordData::SRV(_));
+  matches!(recs[1].data(), RecordData::A(_));
+  matches!(recs[2].data(), RecordData::AAAA(_));
+  matches!(recs[3].data(), RecordData::TXT(_));
 }
 
 async fn instance_addr_srv<R: Runtime>() {
@@ -67,18 +57,17 @@ async fn instance_addr_srv<R: Runtime>() {
 
   let recs = s
     .records(
-      &"hostname._http._tcp.local.".parse().unwrap(),
+      &"hostname._http._tcp.local.".into(),
       RecordType::SRV,
     )
     .await
     .unwrap();
   assert_eq!(recs.len(), 3, "bad: {recs:?}");
 
-  let srv = recs[0].data().cloned().unwrap().into_srv().expect("SRV");
+  let RecordData::SRV(srv) = recs[0].data() else { panic!("bad: {recs:?}") };
 
-  recs[1].data().cloned().unwrap().into_a().expect("A");
-
-  recs[2].data().cloned().unwrap().into_aaaa().expect("AAAA");
+  matches!(recs[1].data(), RecordData::A(_));
+  matches!(recs[2].data(), RecordData::AAAA(_));
 
   assert_eq!(srv.port(), s.port());
 }
@@ -88,16 +77,16 @@ async fn instance_addr_a<R: Runtime>() {
 
   let recs = s
     .records(
-      &"hostname._http._tcp.local.".parse().unwrap(),
+      &"hostname._http._tcp.local.".into(),
       RecordType::A,
     )
     .await
     .unwrap();
   assert_eq!(recs.len(), 1, "bad: {recs:?}");
 
-  let a = recs[0].data().cloned().unwrap().into_a().expect("A");
+  let RecordData::A(a) = recs[0].data() else { panic!("bad: {recs:?}") };
 
-  assert_eq!(a.0, "192.168.0.42".parse::<Ipv4Addr>().unwrap());
+  assert_eq!(a, &"192.168.0.42".parse::<Ipv4Addr>().unwrap());
 }
 
 async fn instance_addr_aaaa<R: Runtime>() {
@@ -105,18 +94,18 @@ async fn instance_addr_aaaa<R: Runtime>() {
 
   let recs = s
     .records(
-      &"hostname._http._tcp.local.".parse().unwrap(),
+      &"hostname._http._tcp.local.".into(),
       RecordType::AAAA,
     )
     .await
     .unwrap();
   assert_eq!(recs.len(), 1, "bad: {recs:?}");
 
-  let aaaa = recs[0].data().cloned().unwrap().into_aaaa().expect("AAAA");
+  let RecordData::AAAA(aaaa) = recs[0].data() else { panic!("bad: {recs:?}") };
 
   assert_eq!(
-    aaaa.0,
-    "2620:0:1000:1900:b0c2:d0b2:c411:18bc"
+    aaaa,
+    &"2620:0:1000:1900:b0c2:d0b2:c411:18bc"
       .parse::<Ipv6Addr>()
       .unwrap()
   );
@@ -127,36 +116,36 @@ async fn instance_addr_txt<R: Runtime>() {
 
   let recs = s
     .records(
-      &"hostname._http._tcp.local.".parse().unwrap(),
+      &"hostname._http._tcp.local.".into(),
       RecordType::TXT,
     )
     .await
     .unwrap();
   assert_eq!(recs.len(), 1, "bad: {recs:?}");
 
-  let txt = recs[0].data().cloned().unwrap().into_txt().expect("TXT");
+  let RecordData::TXT(txt) = recs[0].data() else { panic!("bad: {recs:?}") };
 
-  assert_eq!(&*txt.txt_data()[0], s.txt_records()[0].as_bytes());
+  assert_eq!(&txt[0], &s.txt_records()[0]);
 }
 
 async fn hostname_query<R: Runtime>() {
   let questions = [
     (
-      ("testhost.".parse().unwrap(), RecordType::A),
+      ("testhost.".into(), RecordType::A),
       OneOrMore::from(Record::from_rdata(
-        Name::from_str("testhost.").unwrap(),
+        Name::from("testhost."),
         120,
-        RData::A(A("192.168.0.42".parse().unwrap())),
+        RecordData::A("192.168.0.42".parse().unwrap()),
       )),
     ),
     (
-      ("testhost.".parse().unwrap(), RecordType::AAAA),
+      ("testhost.".into(), RecordType::AAAA),
       OneOrMore::from(Record::from_rdata(
-        Name::from_str("testhost.").unwrap(),
+        Name::from("testhost."),
         120,
-        RData::AAAA(AAAA(
+        RecordData::AAAA(
           "2620:0:1000:1900:b0c2:d0b2:c411:18bc".parse().unwrap(),
-        )),
+        ),
       )),
     ),
   ];
@@ -175,15 +164,15 @@ async fn service_enum_ptr<R: Runtime>() {
 
   let recs = s
     .records(
-      &"_services._dns-sd._udp.local.".parse().unwrap(),
+      &"_services._dns-sd._udp.local.".into(),
       RecordType::PTR,
     )
     .await
     .unwrap();
   assert_eq!(recs.len(), 1, "bad: {recs:?}");
 
-  let ptr = recs[0].data().cloned().unwrap().into_ptr().unwrap();
-  assert_eq!(ptr.0, Name::from_str("_http._tcp.local.").unwrap());
+  let RecordData::PTR(ptr) = recs[0].data() else { panic!("bad: {recs:?}") };
+  assert_eq!(ptr, &Name::from("_http._tcp.local."));
 }
 
 test_suites!(tokio {

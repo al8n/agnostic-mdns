@@ -4,18 +4,20 @@ use std::{
   str::FromStr,
 };
 
-use smallvec_wrapper::OneOrMore;
 use smol_str::SmolStr;
 
+mod answer;
 mod srv;
 mod name;
 mod message;
-mod question;
+mod query;
 
 pub use name::Name;
 pub use srv::SRV;
+pub(crate) use answer::Answer;
 pub(crate) use message::Message;
-pub(crate) use question::Question;
+pub(crate) use query::Query;
+use triomphe::Arc;
 
 #[derive(Debug, thiserror::Error)]
 pub enum EncodeError {
@@ -64,6 +66,8 @@ pub enum RecordType {
   PTR = 12,
   /// [RFC 2782](https://tools.ietf.org/html/rfc2782) Service locator
   SRV = 33,
+  /// [RFC 1035](https://tools.ietf.org/html/rfc1035) Text record
+  TXT = 16,
 }
 
 impl TryFrom<&str> for RecordType {
@@ -71,14 +75,15 @@ impl TryFrom<&str> for RecordType {
 
   #[inline]
   fn try_from(value: &str) -> Result<Self, Self::Error> {
-    match value.trim() {
-      "A" | "a" => Ok(RecordType::A),
-      "AAAA" | "aaaa" => Ok(RecordType::AAAA),
-      "ANY" | "any" => Ok(RecordType::ANY),
-      "PTR" | "ptr" => Ok(RecordType::PTR),
-      "SRV" | "srv" => Ok(RecordType::SRV),
-      _ => Err(UnknownRecordTypeStr(value.into())),
-    }
+    Ok(match value.trim() {
+      "A" | "a" => RecordType::A,
+      "AAAA" | "aaaa" => RecordType::AAAA,
+      "ANY" | "any" => RecordType::ANY,
+      "PTR" | "ptr" => RecordType::PTR,
+      "SRV" | "srv" => RecordType::SRV,
+      "TXT" | "txt" => RecordType::TXT,
+      _ => return Err(UnknownRecordTypeStr(value.into())),
+    })
   }
 }
 
@@ -100,14 +105,15 @@ impl TryFrom<u16> for RecordType {
 
   #[inline]
   fn try_from(value: u16) -> Result<Self, Self::Error> {
-    match value {
-      1 => Ok(RecordType::A),
-      28 => Ok(RecordType::AAAA),
-      255 => Ok(RecordType::ANY),
-      12 => Ok(RecordType::PTR),
-      33 => Ok(RecordType::SRV),
-      _ => Err(UnknownRecordType(value)),
-    }
+    Ok(match value {
+      1 => Self::A,
+      28 => Self::AAAA,
+      255 => Self::ANY,
+      12 => Self::PTR,
+      33 => Self::SRV,
+      16 => Self::TXT,
+      _ => return Err(UnknownRecordType(value)),
+    })
   }
 }
 
@@ -236,7 +242,21 @@ pub enum RecordData {
   /// TXT RRs are used to hold descriptive text.  The semantics of the text
   /// depends on the domain where it is found.
   /// ```
-  TXT(OneOrMore<SmolStr>),
+  TXT(Arc<[SmolStr]>),
+}
+
+impl RecordData {
+  /// Returns the type of the record data.
+  #[inline]
+  pub const fn ty(&self) -> RecordType {
+    match self {
+      Self::A(_) => RecordType::A,
+      Self::AAAA(_) => RecordType::AAAA,
+      Self::PTR(_) => RecordType::PTR,
+      Self::SRV(_) => RecordType::SRV,
+      Self::TXT(_) => RecordType::TXT,
+    }
+  }
 }
 
 /// The mDNS resource record.
@@ -247,6 +267,19 @@ pub struct Record {
 }
 
 impl Record {
+  /// Creates a new mDNS resource record.
+  pub fn from_rdata(name: Name, ttl: u32, data: RecordData) -> Self {
+    Self {
+      header: RecordHeader {
+        name,
+        ty: data.ty(),
+        class: DNSClass::IN,
+        ttl,
+      },
+      data,
+    }
+  }
+
   /// Consumes the record and returns the [`RecordHeader`] and [`RecordData`].
   #[inline]
   pub fn into_components(self) -> (RecordHeader, RecordData) {
@@ -264,10 +297,21 @@ impl Record {
   pub const fn data(&self) -> &RecordData {
     &self.data
   }
+
+  fn encode(&self, buf: &mut [u8], off: usize, cmap: &mut CompressionMap) -> Result<usize, EncodeError> {
+    todo!()
+  }
+
+  fn encoded_len(&self, cmap: &mut CompressionMap) -> usize {
+    todo!()
+  }
 }
 
 const MESSAGE_HEADER_SIZE: usize = 12;
 const QDCOUNT_OFFSET: usize = 4;
+const ANCOUNT_OFFSET: usize = 6;
+pub(crate) const OP_CODE_QUERY: u16 = 0;
+pub(crate) const RESPONSE_CODE_NO_ERROR: u16 = 0;
 
 /// Used to allow a more efficient compression map
 /// to be used for internal packDomainName calls without changing the

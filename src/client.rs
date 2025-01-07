@@ -1,7 +1,5 @@
 use core::{
-  mem,
   net::{Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4, SocketAddrV6},
-  str::FromStr,
   time::Duration,
 };
 use std::{
@@ -16,15 +14,10 @@ use agnostic::{
 use async_channel::Sender;
 use atomic_refcell::AtomicRefCell;
 use futures_util::FutureExt;
-use smallvec_wrapper::OneOrMore;
-// use hickory_proto::{
-//   op::{Message, Query},
-//   rr::{RData, RecordType},
-// };
-use smol_str::{format_smolstr, SmolStr};
+use smol_str::SmolStr;
 use triomphe::Arc;
 
-use crate::{types::{Question, Name, RecordData, RecordType, Record, Message}, IPV4_MDNS, IPV6_MDNS, MAX_PAYLOAD_SIZE, MDNS_PORT};
+use crate::{types::{Query, Name, RecordData, Message}, IPV4_MDNS, IPV6_MDNS, MAX_PAYLOAD_SIZE, MDNS_PORT};
 
 pub use async_channel::{Receiver, Recv, TryRecvError};
 
@@ -35,7 +28,7 @@ pub struct ServiceEntry {
   host: Name,
   socket_v4: Option<SocketAddrV4>,
   socket_v6: Option<SocketAddrV6>,
-  infos: Arc<OneOrMore<SmolStr>>,
+  infos: Arc<[SmolStr]>,
 }
 
 impl ServiceEntry {
@@ -85,7 +78,7 @@ impl ServiceEntry {
 }
 
 /// Returned after we query for a service.
-#[derive(Default, Clone)]
+#[derive(Clone)]
 struct ServiceEntryBuilder {
   name: Name,
   host: Name,
@@ -93,10 +86,26 @@ struct ServiceEntryBuilder {
   ipv4: Option<Ipv4Addr>,
   ipv6: Option<Ipv6Addr>,
   zone: Option<u32>,
-  infos: Arc<OneOrMore<SmolStr>>,
-
+  infos: Arc<[SmolStr]>,
   has_txt: bool,
   sent: bool,
+}
+
+impl Default for ServiceEntryBuilder {
+  #[inline]
+  fn default() -> Self {
+    Self {
+      name: Name::default(),
+      host: Name::default(),
+      port: 0,
+      ipv4: None,
+      ipv6: None,
+      zone: None,
+      has_txt: false,
+      sent: false,
+      infos: Arc::from_iter([]),
+    }
+  }
 }
 
 impl ServiceEntryBuilder {
@@ -373,7 +382,7 @@ impl<R: Runtime> Client<R> {
     }
 
     // Send the query
-    let q = Question::new(service, want_unicast_response);
+    let q = Query::new(service, want_unicast_response);
 
     self.send_query(q).await?;
 
@@ -423,7 +432,7 @@ impl<R: Runtime> Client<R> {
                   // Pull out the txt
                   let ent = ensure_name(&mut inprogress, name);
                   let mut ref_mut = ent.borrow_mut();
-                  ref_mut.infos = Arc::new(data);
+                  ref_mut.infos = data.clone();
                   ref_mut.has_txt = true;
                   drop(ref_mut);
                   inp = Some(ent);
@@ -476,7 +485,7 @@ impl<R: Runtime> Client<R> {
                     }
                   } else {
                     // Fire off a node specific query
-                    let question = Question::new(ref_mut.name.clone(), false);
+                    let question = Query::new(ref_mut.name.clone(), false);
                     self.send_query(question).await.inspect_err(|e| {
                       tracing::error!(err=%e, "mdns: failed to query instance {}", ref_mut.name);
                     })?;
@@ -495,7 +504,7 @@ impl<R: Runtime> Client<R> {
     }
   }
 
-  async fn send_query(&self, question: Question) -> io::Result<()> {
+  async fn send_query(&self, question: Query) -> io::Result<()> {
     let buf = question
       .encode()
       .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;

@@ -1,16 +1,7 @@
 #[cfg(test)]
 mod tests;
 
-use core::{
-  net::{Ipv4Addr, Ipv6Addr},
-  str::FromStr,
-};
-use std::io;
-
-pub use hickory_proto::{
-  error::ProtoError,
-  rr::{Name, RecordType},
-};
+use std::{io, net::{Ipv4Addr, Ipv6Addr}};
 
 const IPV4_MDNS: Ipv4Addr = Ipv4Addr::new(224, 0, 0, 251);
 const IPV6_MDNS: Ipv6Addr = Ipv6Addr::new(0xff02, 0, 0, 0, 0, 0, 0, 0xfb);
@@ -22,7 +13,7 @@ pub mod client;
 pub mod server;
 
 mod types;
-pub use types::{DNSClass, RecordData, RecordHeader, UnknownRecordType, UnknownRecordTypeStr};
+pub use types::{DNSClass, Name, RecordData, RecordHeader, UnknownRecordType, UnknownRecordTypeStr};
 
 mod zone;
 pub use zone::*;
@@ -47,7 +38,7 @@ pub fn hostname() -> io::Result<Name> {
   return {
     let name = rustix::system::uname();
     let name = name.nodename().to_string_lossy();
-    Name::from_str(name.as_ref()).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))
+    Ok(Name::from(name.as_ref()))
   };
 
   #[cfg(windows)]
@@ -55,7 +46,7 @@ pub fn hostname() -> io::Result<Name> {
     match ::hostname::get() {
       Ok(name) => {
         let name = name.to_string_lossy();
-        Name::from_str(name.as_ref()).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))
+        Ok(Name::from(name.as_ref()))
       }
       Err(e) => Err(e),
     }

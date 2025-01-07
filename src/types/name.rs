@@ -6,10 +6,46 @@ use smol_str::{format_smolstr, SmolStr};
 use super::{CompressionMap, EncodeError, COMPRESSION_POINTER_MASK, MAX_COMPRESSION_OFFSET};
 
 /// A name
-#[derive(Debug, Default, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[derive(Debug, Default, Clone)]
 pub struct Name {
   name: SmolStr,
   fqdn: bool,
+}
+
+impl PartialEq for Name {
+  fn eq(&self, other: &Self) -> bool {
+    self.name == other.name
+  }
+}
+
+impl Eq for Name {}
+
+impl core::hash::Hash for Name {
+  fn hash<H: core::hash::Hasher>(&self, state: &mut H) {
+    self.name.hash(state);
+  }
+}
+
+impl PartialOrd for Name {
+  fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+    Some(self.cmp(other))
+  }
+}
+
+impl Ord for Name {
+  fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+    self.name.cmp(&other.name)
+  }
+}
+
+impl From<&str> for Name {
+  fn from(name: &str) -> Self {
+    let fqdn = is_fqdn(name);
+    Self {
+      name: SmolStr::new(name),
+      fqdn,
+    }
+  }
 }
 
 impl core::borrow::Borrow<str> for Name {
@@ -42,12 +78,28 @@ impl core::fmt::Display for Name {
 }
 
 impl Name {
+  /// Appends a name to the current name in FQDN format.
   pub fn append_fqdn(&self, other: &str) -> Self {
     let name = format_smolstr!("{}.{}.", self.name.as_str().trim_matches('.'), other.trim_matches('.'));
     Self {
       name,
       fqdn: true,
     }
+  }
+
+  /// Appends a name to the current name
+  pub fn append(&self, other: &Name) -> Self {
+    let name = format_smolstr!("{}{}", self.name.as_str(), other.name.as_str());
+    Self {
+      fqdn: is_fqdn(name.as_str()),
+      name,
+    }
+  }
+
+  /// Returns `true` if the name is fully qualified.
+  #[inline]
+  pub const fn is_fqdn(&self) -> bool {
+    self.fqdn
   }
 
   /// Returns a string representation of the name.
@@ -57,10 +109,23 @@ impl Name {
   }
 
   #[inline]
+  pub(crate) const fn from_components(name: SmolStr, fqdn: bool) -> Self {
+    Self { name, fqdn }
+  }
+
+  #[inline]
   pub(crate) fn local() -> Self {
     Self {
       name: SmolStr::new("local"),
       fqdn: false,
+    }
+  }
+
+  #[inline]
+  pub(crate) fn local_fqdn() -> Self {
+    Self {
+      name: SmolStr::new("local."),
+      fqdn: true,
     }
   }
 
