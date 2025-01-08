@@ -1,17 +1,12 @@
-use core::{
-  convert::Infallible, error::Error, future::Future, marker::PhantomData, net::IpAddr,
-};
+use core::{convert::Infallible, error::Error, future::Future, marker::PhantomData, net::IpAddr};
 
 use std::{net::ToSocketAddrs, vec::Vec};
 
+use super::types::{Name, Record, RecordData, RecordType, SRV};
 use agnostic::Runtime;
+use smallvec_wrapper::{OneOrMore, TinyVec};
 use smol_str::{format_smolstr, SmolStr};
 use triomphe::Arc;
-use super::types::{
-  SRV,
-  Name, RecordData, Record, RecordType,
-};
-use smallvec_wrapper::{OneOrMore, TinyVec};
 
 const DEFAULT_TTL: u32 = 120;
 
@@ -254,10 +249,7 @@ impl ServiceBuilder {
     };
 
     let ips = if self.ips.is_empty() {
-      let tmp_hostname =
-        hostname
-          .clone()
-          .append(&domain);
+      let tmp_hostname = hostname.clone().append(&domain);
 
       tmp_hostname
         .as_str()
@@ -272,9 +264,21 @@ impl ServiceBuilder {
       self.ips
     };
 
-    let service_addr = format_smolstr!("{}.{}.", self.service.as_str().trim_matches('.'), domain.as_str().trim_matches('.'));
-    let instance_addr = format_smolstr!("{}.{}.{}.", self.instance.as_str().trim_matches('.'), self.service.as_str().trim_matches('.'), domain.as_str().trim_matches('.'));
-    let enum_addr = format_smolstr!("_services._dns-sd._udp.{}.", domain.as_str().trim_matches('.'));
+    let service_addr = format_smolstr!(
+      "{}.{}.",
+      self.service.as_str().trim_matches('.'),
+      domain.as_str().trim_matches('.')
+    );
+    let instance_addr = format_smolstr!(
+      "{}.{}.{}.",
+      self.instance.as_str().trim_matches('.'),
+      self.service.as_str().trim_matches('.'),
+      domain.as_str().trim_matches('.')
+    );
+    let enum_addr = format_smolstr!(
+      "_services._dns-sd._udp.{}.",
+      domain.as_str().trim_matches('.')
+    );
 
     Ok(Service {
       port,
@@ -432,7 +436,11 @@ impl<R> Service<R> {
         .ips
         .iter()
         .filter_map(|ip| match ip {
-          IpAddr::V4(ip) => Some(Record::from_rdata(name.clone(), self.ttl, RecordData::A(*ip))),
+          IpAddr::V4(ip) => Some(Record::from_rdata(
+            name.clone(),
+            self.ttl,
+            RecordData::A(*ip),
+          )),
           _ => None,
         })
         .collect(),
@@ -472,11 +480,7 @@ impl<R> Service<R> {
       }
       RecordType::TXT => {
         // Build a TXT response for the instance
-        let rr = Record::from_rdata(
-          name.clone(),
-          self.ttl,
-          RecordData::TXT(self.txt.clone()),
-        );
+        let rr = Record::from_rdata(name.clone(), self.ttl, RecordData::TXT(self.txt.clone()));
         OneOrMore::from_buf([rr])
       }
       _ => OneOrMore::new(),

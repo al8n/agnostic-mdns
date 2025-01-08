@@ -9,7 +9,6 @@ const PTRVALUE: u16 = 12;
 const SRVVALUE: u16 = 33;
 const TXTVALUE: u16 = 16;
 
-
 #[derive(Debug, Clone, PartialEq, Eq, Hash, thiserror::Error)]
 #[error("unknown record type string: {0}")]
 pub struct UnknownRecordTypeStr(pub SmolStr);
@@ -33,6 +32,8 @@ pub enum RecordType {
   SRV = SRVVALUE,
   /// [RFC 1035](https://tools.ietf.org/html/rfc1035) Text record
   TXT = TXTVALUE,
+  /// The value for the zero record type.
+  UNKNOWN(u16),
 }
 
 impl RecordType {
@@ -46,6 +47,7 @@ impl RecordType {
       Self::PTR => "PTR",
       Self::SRV => "SRV",
       Self::TXT => "TXT",
+      Self::UNKNOWN(_) => "UNKNOWN",
     }
   }
 }
@@ -53,7 +55,15 @@ impl RecordType {
 impl From<RecordType> for u16 {
   #[inline]
   fn from(value: RecordType) -> u16 {
-    value as u16
+    match value {
+      RecordType::A => AVALUE,
+      RecordType::AAAA => AAAAVALUE,
+      RecordType::ANY => ANYVALUE,
+      RecordType::PTR => PTRVALUE,
+      RecordType::SRV => SRVVALUE,
+      RecordType::TXT => TXTVALUE,
+      RecordType::UNKNOWN(v) => v,
+    }
   }
 }
 
@@ -90,23 +100,17 @@ impl FromStr for RecordType {
   }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash, thiserror::Error)]
-#[error("unknown record type: {0}")]
-pub struct UnknownRecordType(pub u16);
-
-impl TryFrom<u16> for RecordType {
-  type Error = UnknownRecordType;
-
+impl From<u16> for RecordType {
   #[inline]
-  fn try_from(value: u16) -> Result<Self, Self::Error> {
-    Ok(match value {
+  fn from(value: u16) -> Self {
+    match value {
       AVALUE => Self::A,
       AAAAVALUE => Self::AAAA,
       ANYVALUE => Self::ANY,
       PTRVALUE => Self::PTR,
       SRVVALUE => Self::SRV,
       TXTVALUE => Self::TXT,
-      _ => return Err(UnknownRecordType(value)),
-    })
+      _ => Self::UNKNOWN(value),
+    }
   }
 }

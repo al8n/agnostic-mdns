@@ -17,7 +17,10 @@ use futures_util::FutureExt;
 use smol_str::SmolStr;
 use triomphe::Arc;
 
-use crate::{types::{Query, Name, RecordData, Message}, IPV4_MDNS, IPV6_MDNS, MAX_PAYLOAD_SIZE, MDNS_PORT};
+use crate::{
+  types::{Message, Name, Query, RecordData},
+  IPV4_MDNS, IPV6_MDNS, MAX_PAYLOAD_SIZE, MDNS_PORT,
+};
 
 pub use async_channel::{Receiver, Recv, TryRecvError};
 
@@ -134,7 +137,7 @@ impl ServiceEntryBuilder {
 }
 
 /// How a lookup is performed.
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct QueryParam {
   service: Name,
   domain: Name,

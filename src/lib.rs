@@ -1,7 +1,12 @@
+#![allow(unexpected_cfgs)]
+
 #[cfg(test)]
 mod tests;
 
-use std::{io, net::{Ipv4Addr, Ipv6Addr}};
+use std::{
+  io,
+  net::{Ipv4Addr, Ipv6Addr},
+};
 
 const IPV4_MDNS: Ipv4Addr = Ipv4Addr::new(224, 0, 0, 251);
 const IPV6_MDNS: Ipv6Addr = Ipv6Addr::new(0xff02, 0, 0, 0, 0, 0, 0, 0xfb);
@@ -13,7 +18,7 @@ pub mod client;
 pub mod server;
 
 mod types;
-pub use types::{DNSClass, Name, RecordData, RecordHeader, UnknownRecordType, UnknownRecordTypeStr};
+pub use types::{DNSClass, Name, RecordData, RecordHeader, UnknownRecordTypeStr};
 
 mod zone;
 pub use zone::*;

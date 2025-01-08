@@ -7,6 +7,7 @@ use crate::{
   client::{bounded, query_with, QueryParam},
   server::{Server, ServerOptions},
   tests::make_service,
+  Name,
 };
 
 use super::make_service_with_service_name;
@@ -21,7 +22,6 @@ async fn server_start_stop<R: Runtime>() {
 async fn server_lookup<R: Runtime>() {
   let s = make_service_with_service_name("_foobar._tcp").await;
   let serv = Server::<R>::new(s, ServerOptions::default()).await.unwrap();
-
   let (producer, consumer) = bounded(1);
   let (err_tx, err_rx) = async_channel::bounded::<String>(1);
   scopeguard::defer!(err_tx.close(););
@@ -59,32 +59,32 @@ async fn server_lookup<R: Runtime>() {
     }
   });
 
-  // let params = QueryParam::new("_foobar._tcp".parse().unwrap())
-  //   .with_timeout(Duration::from_millis(50))
-  //   .with_disable_ipv6(true);
+  let params = QueryParam::new(Name::from("_foobar._tcp"))
+    .with_timeout(Duration::from_millis(50))
+    .with_disable_ipv6(true);
 
-  // match query_with::<R>(params, producer).await {
-  //   Ok(_) => {}
-  //   Err(e) => {
-  //     serv.shutdown().await;
-  //     panic!("{}", e);
-  //   }
-  // }
+  match query_with::<R>(params, producer).await {
+    Ok(_) => {}
+    Err(e) => {
+      serv.shutdown().await;
+      panic!("{}", e);
+    }
+  }
 
-  // match err_rx.recv().await {
-  //   Ok(res) => {
-  //     if res.ne("success") {
-  //       serv.shutdown().await;
-  //       panic!("{}", res);
-  //     }
+  match err_rx.recv().await {
+    Ok(res) => {
+      if res.ne("success") {
+        serv.shutdown().await;
+        panic!("{}", res);
+      }
 
-  //     serv.shutdown().await;
-  //   }
-  //   Err(e) => {
-  //     serv.shutdown().await;
-  //     panic!("{}", e);
-  //   }
-  // }
+      serv.shutdown().await;
+    }
+    Err(e) => {
+      serv.shutdown().await;
+      panic!("{}", e);
+    }
+  }
 }
 
 test_suites!(tokio {

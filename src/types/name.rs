@@ -3,7 +3,11 @@ use std::collections::HashSet;
 use smallvec_wrapper::XXLargeVec;
 use smol_str::{format_smolstr, SmolStr};
 
-use super::{CompressionMap, EncodeError, COMPRESSION_POINTER_MASK, MAX_COMPRESSION_OFFSET};
+use super::{
+  ddd_to_byte, escape_byte, is_ddd, CompressionMap, ProtoError, SlicableSmolStr,
+  COMPRESSION_POINTER_MASK, MAX_COMPRESSION_OFFSET, MAX_COMPRESSION_POINTERS,
+  MAX_DOMAIN_NAME_WIRE_OCTETS,
+};
 
 /// A name
 #[derive(Debug, Default, Clone)]
@@ -80,11 +84,12 @@ impl core::fmt::Display for Name {
 impl Name {
   /// Appends a name to the current name in FQDN format.
   pub fn append_fqdn(&self, other: &str) -> Self {
-    let name = format_smolstr!("{}.{}.", self.name.as_str().trim_matches('.'), other.trim_matches('.'));
-    Self {
-      name,
-      fqdn: true,
-    }
+    let name = format_smolstr!(
+      "{}.{}.",
+      self.name.as_str().trim_matches('.'),
+      other.trim_matches('.')
+    );
+    Self { name, fqdn: true }
   }
 
   /// Appends a name to the current name
@@ -129,7 +134,12 @@ impl Name {
     }
   }
 
-  pub(super) fn encoded_len(&self, off: usize, cmap: Option<&mut HashSet<SmolStr>>) -> usize {
+  pub(super) fn encoded_len(
+    &self,
+    off: usize,
+    cmap: &mut Option<HashSet<SlicableSmolStr>>,
+    compress: bool,
+  ) -> usize {
     if self.name.is_empty() || self.name.eq(".") {
       return 1;
     }
@@ -137,7 +147,7 @@ impl Name {
     let escaped = self.name.contains('\\');
 
     if let Some(cmap) = cmap {
-      if off < MAX_COMPRESSION_OFFSET {
+      if off < MAX_COMPRESSION_OFFSET || compress {
         // compression_len_search will insert the entry into the compression
         // map if it doesn't contain it.
         if let Some(l) = compression_len_search(cmap, &self.name, off) {
@@ -157,33 +167,131 @@ impl Name {
     self.name.len() + 1
   }
 
+  pub(super) fn decode(msg: &[u8], mut off: usize) -> Result<(Self, usize), ProtoError> {
+    // Start with a smaller capacity and let it grow as needed
+    let mut s = InlineDomain::with_capacity(23); // Most domain names are shorter than 32 bytes
+    let mut off1 = 0;
+    let lenmsg = msg.len();
+    let mut budget = MAX_DOMAIN_NAME_WIRE_OCTETS as isize;
+    let mut ptr = 0; // number of pointers followed
+
+    loop {
+      if off >= lenmsg {
+        return Err(ProtoError::BufferTooSmall);
+      }
+
+      let c = msg[off];
+      off += 1;
+
+      match c & 0xC0 {
+        0x00 => {
+          if c == 0x00 {
+            // end of name
+            break;
+          }
+
+          // literal string
+          let label_len = c as usize;
+          if off + label_len > lenmsg {
+            return Err(ProtoError::BufferTooSmall);
+          }
+
+          budget -= (label_len as isize) + 1; // +1 for the label separator
+          if budget <= 0 {
+            return Err(ProtoError::LongDomain);
+          }
+
+          for &b in msg[off..off + label_len].iter() {
+            if is_domain_name_label_special(b) {
+              s.extend_from_slice(&[b'\\', b]);
+            } else if !(b' '..=b'~').contains(&b) {
+              s.extend_from_slice(&escape_byte(b));
+            } else {
+              s.push(b);
+            }
+          }
+          s.push(b'.');
+          off += label_len;
+        }
+        0xC0 => {
+          // pointer to somewhere else in msg.
+          // remember location after first ptr,
+          // since that's how many bytes we consumed.
+          // also, don't follow too many pointers --
+          // maybe there's a loop.
+          if off >= lenmsg {
+            return Err(ProtoError::NotEnoughData);
+          }
+
+          let c1 = msg[off];
+          off += 1;
+
+          if ptr == 0 {
+            off1 = off;
+          }
+
+          ptr += 1;
+          if ptr > MAX_COMPRESSION_POINTERS {
+            return Err(ProtoError::TooManyPointers);
+          }
+
+          // pointer should guarantee that it advances and points forwards at least
+          // but the condition on previous three lines guarantees that it's
+          // at least loop-free
+          off = ((c as usize ^ 0xC0) << 8) | c1 as usize;
+        }
+        _ => return Err(ProtoError::InvalidRdata),
+      }
+    }
+
+    if ptr == 0 {
+      off1 = off;
+    }
+
+    if s.is_empty() {
+      Ok((Name::from("."), off1))
+    } else {
+      // SAFETY: We only added ASCII bytes and properly escaped non-ASCII
+      let s = core::str::from_utf8(s.as_slice()).expect("we only added ASCII bytes");
+      Ok((
+        Self {
+          name: SmolStr::new(s),
+          fqdn: is_fqdn(s),
+        },
+        off1,
+      ))
+    }
+  }
+
   pub(super) fn encode(
     &self,
     buf: &mut [u8],
     off: usize,
     cmap: &mut Option<CompressionMap>,
-  ) -> Result<usize, EncodeError> {
+    compress: bool,
+  ) -> Result<usize, ProtoError> {
     let s = &self.name;
     if s.is_empty() {
       return Ok(off);
     }
 
     if !self.fqdn {
-      return Err(EncodeError::NotFqdn);
+      return Err(ProtoError::NotFqdn);
     }
 
+    // Compression
     let mut pointer: i32 = -1;
     let mut off = off;
     let mut begin = 0;
     let mut comp_begin = 0;
     let mut comp_off = 0;
-    let mut bs: Option<XXLargeVec<u8>> = None;
+    let mut bs = XXLargeVec::new();
     let mut was_dot = false;
-    let ls = s.len();
+    let mut ls = s.len();
 
     let mut i = 0;
     while i < ls {
-      let c = if let Some(ref bs) = bs {
+      let c = if !bs.is_empty() {
         bs[i]
       } else {
         s.as_bytes()[i]
@@ -192,68 +300,81 @@ impl Name {
       match c {
         b'\\' => {
           if off + 1 > buf.len() {
-            return Err(EncodeError::BufferTooSmall);
+            return Err(ProtoError::BufferTooSmall);
           }
 
-          if bs.is_none() {
-            let mut bbuf = XXLargeVec::with_capacity(ls);
-            bbuf.extend_from_slice(s.as_bytes());
-            bs = Some(bbuf);
+          if bs.is_empty() {
+            bs.extend_from_slice(s.as_bytes());
           }
 
-          let bs = bs.as_mut().unwrap();
-
-          if is_ddd(&s[i + 1..]) {
+          if is_ddd(&s.as_bytes()[i + 1..]) {
             bs[i] = ddd_to_byte(&bs[i + 1..]);
             bs.copy_within(i + 4..ls, i + 1);
             comp_off += 3;
-            i += 1;
+            ls -= 3;
           } else {
             bs.copy_within(i + 1..ls, i);
             comp_off += 1;
-            i += 1;
+            ls -= 1;
           }
 
           was_dot = false;
         }
         b'.' => {
-          if i == 0 && ls > 1 {
-            return Err(EncodeError::InvalidRdata);
+          if i == 0 && s.len() > 1 {
+            return Err(ProtoError::InvalidRdata);
           }
 
           if was_dot {
-            return Err(EncodeError::InvalidRdata);
+            return Err(ProtoError::InvalidRdata);
           }
           was_dot = true;
 
           let label_len = i - begin;
           if label_len >= 1 << 6 {
-            return Err(EncodeError::InvalidRdata);
+            // top two bits of length must be clear
+            return Err(ProtoError::InvalidRdata);
           }
 
+          // off can already (we're in a loop) be bigger than len(msg)
+          // this happens when a name isn't fully qualified
           if off + 1 + label_len > buf.len() {
-            return Err(EncodeError::BufferTooSmall);
+            return Err(ProtoError::BufferTooSmall);
           }
 
-          let bs_ref = bs.as_ref().map(|v| &v[..]);
+          // Don't try to compress '.'
+          // We should only compress when compress is true, but we should also still pick
+          // up names that can be used for *future* compression(s).
           if let Some(cmap) = cmap {
-            if !is_root_label(s, bs_ref, begin, ls) {
+            if !is_root_label(s, &bs, begin, ls) {
               if let Some(p) = cmap.find(&s[comp_begin..]) {
-                pointer = p as i32; // Where to point to
-                break;
+                // The first hit is the longest matching dname
+                // keep the pointer offset we get back and store
+                // the offset of the current name, because that's
+                // where we need to insert the pointer later
+
+                // If compress is true, we're allowed to compress this dname
+                if compress {
+                  pointer = p as i32; // Where to point to
+                  break;
+                }
               } else if off < MAX_COMPRESSION_OFFSET {
                 // Only offsets smaller than MAX_COMPRESSION_OFFSET can be used.
-                cmap.insert(SmolStr::new(&s[comp_begin..]), off as u16);
+                cmap.insert(
+                  SlicableSmolStr::new(s.clone(), comp_begin, s.len()),
+                  off as u16,
+                );
               }
             }
           }
 
+          // The following is covered by the length check above.
           buf[off] = label_len as u8;
 
-          if let Some(ref bs) = bs {
-            buf[off + 1..off + 1 + label_len].copy_from_slice(&bs[begin..i]);
+          if !bs.is_empty() {
+            buf[off + 1..off + 1 + (i - begin)].copy_from_slice(&bs[begin..i]);
           } else {
-            buf[off + 1..off + 1 + label_len].copy_from_slice(&s.as_bytes()[begin..i]);
+            buf[off + 1..off + 1 + (i - begin)].copy_from_slice(&s.as_bytes()[begin..i]);
           }
 
           off += 1 + label_len;
@@ -265,12 +386,14 @@ impl Name {
       i += 1;
     }
 
-    let bs_ref = bs.as_ref().map(|v| &v[..]);
-    if is_root_label(s, bs_ref, 0, ls) {
+    // Root label is special
+    if is_root_label(s, &bs, 0, ls) {
       return Ok(off);
     }
 
+    // If we did compression and we find something add the pointer here
     if pointer != -1 {
+      // We have two bytes (14 bits) to put the pointer in
       let ptr = (pointer as u16) ^ COMPRESSION_POINTER_MASK;
       buf[off..off + 2].copy_from_slice(&ptr.to_be_bytes());
       return Ok(off + 2);
@@ -296,7 +419,7 @@ fn escaped_name_len(s: &str) -> usize {
     }
 
     // Check if we have enough characters left for a potential DDD sequence
-    if i + 1 < bytes.len() && is_ddd(&s[i + 1..]) {
+    if i + 1 < bytes.len() && is_ddd(&s.as_bytes()[i + 1..]) {
       name_len -= 3;
       i += 4; // Skip the backslash and three digits
     } else {
@@ -308,13 +431,18 @@ fn escaped_name_len(s: &str) -> usize {
   name_len
 }
 
-fn compression_len_search(c: &mut HashSet<SmolStr>, s: &str, msg_off: usize) -> Option<usize> {
+fn compression_len_search(
+  c: &mut HashSet<SlicableSmolStr>,
+  s: &SmolStr,
+  msg_off: usize,
+) -> Option<usize> {
   let mut off = 0;
   let mut end = false;
+  let len = s.len();
 
   while !end {
     // Create SmolStr from the substring
-    let substr = SmolStr::new(&s[off..]);
+    let substr = SlicableSmolStr::new(s.clone(), off, len);
 
     if c.contains(&substr) {
       return Some(off);
@@ -365,26 +493,6 @@ const fn next_label(s: &str, offset: usize) -> (usize, bool) {
   (i + 1, true)
 }
 
-#[inline]
-const fn ddd_to_byte(s: &[u8]) -> u8 {
-  // Convert octal \DDD to byte value
-  let d1 = (s[0] - b'0') * 100;
-  let d2 = (s[1] - b'0') * 10;
-  let d3 = s[2] - b'0';
-  d1 + d2 + d3
-}
-
-#[inline]
-const fn is_ddd(s: &str) -> bool {
-  if s.len() < 3 {
-    return false;
-  }
-
-  let bytes = s.as_bytes();
-  // Check if next three characters are digits
-  bytes[0].is_ascii_digit() && bytes[1].is_ascii_digit() && bytes[2].is_ascii_digit()
-}
-
 /// Checks if a domain name is fully qualified (ends with a dot)
 #[inline]
 fn is_fqdn(s: &str) -> bool {
@@ -407,9 +515,255 @@ fn is_fqdn(s: &str) -> bool {
 
 /// Checks if the string from off to end is the root label "."
 #[inline]
-fn is_root_label(s: &str, bs: Option<&[u8]>, off: usize, end: usize) -> bool {
-  match bs {
-    None => s[off..end].eq("."),
-    Some(bytes) => end - off == 1 && bytes[off] == b'.',
+fn is_root_label(s: &str, bs: &[u8], off: usize, end: usize) -> bool {
+  match bs.is_empty() {
+    true => s[off..end].eq("."),
+    false => end - off == 1 && bs[off] == b'.',
+  }
+}
+
+// Returns true if
+// a domain name label byte should be prefixed
+// with an escaping backslash.
+#[inline]
+const fn is_domain_name_label_special(b: u8) -> bool {
+  matches!(
+    b,
+    b'.' | b' ' | b'\'' | b'@' | b';' | b'(' | b')' | b'"' | b'\\'
+  )
+}
+
+smallvec_wrapper::smallvec_wrapper!(
+  InlineDomain<T>([T; 23]);
+);
+
+#[cfg(test)]
+mod tests {
+  use std::collections::HashMap;
+
+  use super::*;
+
+  const MAX_PRINTABLE_LABEL: &str =
+    "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789x";
+  #[test]
+  fn empty_domain() {
+    let input = [0];
+    let (name, _) = Name::decode(&input, 0).unwrap();
+    assert_eq!(name.as_str(), ".");
+  }
+
+  #[test]
+  fn long_label() {
+    let s = [b"?".as_slice(), MAX_PRINTABLE_LABEL.as_bytes(), b"\x00"].concat();
+    let exp = [MAX_PRINTABLE_LABEL, "."].concat();
+    let (name, _) = Name::decode(&s, 0).unwrap();
+    assert_eq!(name.as_str(), exp);
+  }
+
+  #[test]
+  fn unpritable_lable() {
+    let s = [
+      63, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24,
+      25, 26, 27, 28, 29, 30, 31, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18,
+      19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 0,
+    ];
+    let exp = [
+      92u8, 48, 48, 48, 92, 48, 48, 49, 92, 48, 48, 50, 92, 48, 48, 51, 92, 48, 48, 52, 92, 48, 48,
+      53, 92, 48, 48, 54, 92, 48, 48, 55, 92, 48, 48, 56, 92, 48, 48, 57, 92, 48, 49, 48, 92, 48,
+      49, 49, 92, 48, 49, 50, 92, 48, 49, 51, 92, 48, 49, 52, 92, 48, 49, 53, 92, 48, 49, 54, 92,
+      48, 49, 55, 92, 48, 49, 56, 92, 48, 49, 57, 92, 48, 50, 48, 92, 48, 50, 49, 92, 48, 50, 50,
+      92, 48, 50, 51, 92, 48, 50, 52, 92, 48, 50, 53, 92, 48, 50, 54, 92, 48, 50, 55, 92, 48, 50,
+      56, 92, 48, 50, 57, 92, 48, 51, 48, 92, 48, 51, 49, 92, 48, 48, 48, 92, 48, 48, 49, 92, 48,
+      48, 50, 92, 48, 48, 51, 92, 48, 48, 52, 92, 48, 48, 53, 92, 48, 48, 54, 92, 48, 48, 55, 92,
+      48, 48, 56, 92, 48, 48, 57, 92, 48, 49, 48, 92, 48, 49, 49, 92, 48, 49, 50, 92, 48, 49, 51,
+      92, 48, 49, 52, 92, 48, 49, 53, 92, 48, 49, 54, 92, 48, 49, 55, 92, 48, 49, 56, 92, 48, 49,
+      57, 92, 48, 50, 48, 92, 48, 50, 49, 92, 48, 50, 50, 92, 48, 50, 51, 92, 48, 50, 52, 92, 48,
+      50, 53, 92, 48, 50, 54, 92, 48, 50, 55, 92, 48, 50, 56, 92, 48, 50, 57, 92, 48, 51, 48, 46,
+    ];
+
+    let (name, _) = Name::decode(&s, 0).unwrap();
+    assert_eq!(name.as_str(), core::str::from_utf8(&exp).unwrap());
+  }
+
+  #[test]
+  fn long_domain() {
+    let input = b"5abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ01abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVW1abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVW1abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVW1abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVW\x00";
+
+    let exp = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0.abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVW.abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVW.abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVW.abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVW.";
+
+    let name = Name::decode(input, 0).unwrap().0;
+    assert_eq!(name.as_str(), exp);
+  }
+
+  #[test]
+  fn compression_pointer() {
+    let input = [
+      3, b'f', b'o', b'o', 5, 3, b'c', b'o', b'm', 0, 7, b'e', b'x', b'a', b'm', b'p', b'l', b'e',
+      0xC0, 5,
+    ];
+
+    let exp = "foo.\\003com\\000.example.com.";
+    let (name, _) = Name::decode(&input, 0).unwrap();
+    assert_eq!(name.as_str(), exp);
+  }
+
+  #[test]
+  fn too_long_domain() {
+    let input = b"6xabcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ01abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVW1abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVW1abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVW1abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVW";
+
+    let name = Name::decode(input, 0).unwrap_err();
+    assert_eq!(name, ProtoError::LongDomain);
+  }
+
+  #[test]
+  fn too_long_pointer() {
+    let input = [
+      // 11 length values, first to last
+      40, 37, 34, 31, 28, 25, 22, 19, 16, 13, 0, // 12 filler values
+      120, 120, 120, 120, 120, 120, 120, 120, 120, 120, 120, 120,
+      // 10 pointers, last to first
+      192, 10, 192, 9, 192, 8, 192, 7, 192, 6, 192, 5, 192, 4, 192, 3, 192, 2, 192, 1,
+    ];
+
+    let err = Name::decode(&input, 0).unwrap_err();
+    assert_eq!(err, ProtoError::LongDomain);
+  }
+
+  #[test]
+  fn long_by_pointer() {
+    let input = [
+      // 11 length values, first to last
+      37, 34, 31, 28, 25, 22, 19, 16, 13, 10, 0, // 9 filler values
+      120, 120, 120, 120, 120, 120, 120, 120, 120, // 10 pointers, last to first
+      192, 10, 192, 9, 192, 8, 192, 7, 192, 6, 192, 5, 192, 4, 192, 3, 192, 2, 192, 1,
+    ];
+    let output = concat!(
+      "\\\"\\031\\028\\025\\022\\019\\016\\013\\010\\000xxxxxxxxx",
+      "\\192\\010\\192\\009\\192\\008\\192\\007\\192\\006\\192\\005\\192\\004\\192\\003\\192\\002.",
+      "\\031\\028\\025\\022\\019\\016\\013\\010\\000xxxxxxxxx",
+      "\\192\\010\\192\\009\\192\\008\\192\\007\\192\\006\\192\\005\\192\\004\\192\\003.",
+      "\\028\\025\\022\\019\\016\\013\\010\\000xxxxxxxxx",
+      "\\192\\010\\192\\009\\192\\008\\192\\007\\192\\006\\192\\005\\192\\004.",
+      "\\025\\022\\019\\016\\013\\010\\000xxxxxxxxx",
+      "\\192\\010\\192\\009\\192\\008\\192\\007\\192\\006\\192\\005.",
+      "\\022\\019\\016\\013\\010\\000xxxxxxxxx\\192\\010\\192\\009\\192\\008\\192\\007\\192\\006.",
+      "\\019\\016\\013\\010\\000xxxxxxxxx\\192\\010\\192\\009\\192\\008\\192\\007.",
+      "\\016\\013\\010\\000xxxxxxxxx\\192\\010\\192\\009\\192\\008.",
+      "\\013\\010\\000xxxxxxxxx\\192\\010\\192\\009.",
+      "\\010\\000xxxxxxxxx\\192\\010.",
+      "\\000xxxxxxxxx."
+    );
+
+    let (name, _) = Name::decode(&input, 0).unwrap();
+    assert_eq!(name.as_str(), output);
+  }
+
+  #[test]
+  fn truncated_name() {
+    let input = [7, b'e', b'x', b'a', b'm', b'p', b'l', b'e', 3];
+    let err = Name::decode(&input, 0).unwrap_err();
+    assert_eq!(err, ProtoError::BufferTooSmall);
+  }
+
+  #[test]
+  fn non_absolute_name() {
+    let input = [
+      7, b'e', b'x', b'a', b'm', b'p', b'l', b'e', 3, b'c', b'o', b'm',
+    ];
+    let err = Name::decode(&input, 0).unwrap_err();
+    assert_eq!(err, ProtoError::BufferTooSmall);
+  }
+
+  #[test]
+  fn compression_pointer_cycle_too_many() {
+    let input = [0xC0, 0x00];
+    let err = Name::decode(&input, 0).unwrap_err();
+    assert_eq!(err, ProtoError::TooManyPointers);
+  }
+
+  #[test]
+  fn compression_pointer_cycle_too_long() {
+    let input = [
+      3, b'f', b'o', b'o', 3, b'b', b'a', b'r', 7, b'e', b'x', b'a', b'm', b'p', b'l', b'e', 0xC0,
+      0x04,
+    ];
+    let err = Name::decode(&input, 0).unwrap_err();
+    assert_eq!(err, ProtoError::LongDomain);
+  }
+
+  #[test]
+  fn forward_pointer() {
+    let input = [2, 0xC0, 0xFF, 0xC0, 0x01];
+    let err = Name::decode(&input, 0).unwrap_err();
+    assert_eq!(err, ProtoError::BufferTooSmall);
+  }
+
+  #[test]
+  fn reserved_compression_pointer_0b10() {
+    let input = [7, b'e', b'x', b'a', b'm', b'p', b'l', b'e', 0x80];
+    let err = Name::decode(&input, 0).unwrap_err();
+    assert_eq!(err, ProtoError::InvalidRdata);
+  }
+
+  #[test]
+  fn reserved_compression_pointer_0b01() {
+    let input = [7, b'e', b'x', b'a', b'm', b'p', b'l', b'e', 0x40];
+    let err = Name::decode(&input, 0).unwrap_err();
+    assert_eq!(err, ProtoError::InvalidRdata);
+  }
+
+  #[test]
+  fn encode_name_compression_map() {
+    let mut expected = HashMap::new();
+    expected.insert("www\\.this.is.\\131an.example.org.".to_string(), ());
+    expected.insert("is.\\131an.example.org.".to_string(), ());
+    expected.insert("\\131an.example.org.".to_string(), ());
+    expected.insert("example.org.".to_string(), ());
+    expected.insert("org.".to_string(), ());
+
+    let mut msg = vec![0u8; 256];
+    for compress in [true, false] {
+      let mut compression = Some(CompressionMap::new());
+      let name = Name::from("www\\.this.is.\\131an.example.org.");
+      let result = name.encode(&mut msg, 0, &mut compression, compress);
+      assert!(
+        result.is_ok(),
+        "compress: {compress}, encode name failed: {:?}",
+        result.err()
+      );
+      assert!(
+        compression_maps_equal(&expected, compression.as_ref().unwrap()),
+        "expected compression maps to be equal\n{}",
+        compression_maps_difference(&expected, compression.as_ref().unwrap())
+      );
+    }
+  }
+
+  fn compression_maps_equal(expected: &HashMap<String, ()>, actual: &CompressionMap) -> bool {
+    if expected.len() != actual.map.len() {
+      return false;
+    }
+    expected.keys().all(|k| actual.map.contains_key(k.as_str()))
+  }
+
+  fn compression_maps_difference(
+    expected: &HashMap<String, ()>,
+    actual: &CompressionMap,
+  ) -> String {
+    let mut diff = String::new();
+
+    for k in expected.keys() {
+      if !actual.map.contains_key(k.as_str()) {
+        diff.push_str(&format!("- {}\n", k));
+      }
+    }
+
+    for k in actual.map.keys() {
+      if !expected.contains_key(k.as_ref()) {
+        diff.push_str(&format!("+ {}\n", k.as_ref()));
+      }
+    }
+
+    diff
   }
 }

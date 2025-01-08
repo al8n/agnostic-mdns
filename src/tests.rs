@@ -1,8 +1,8 @@
-use core::{future::Future, str::FromStr};
+use core::future::Future;
 
 use agnostic::Runtime;
 
-use crate::{Service, ServiceBuilder, types::Name};
+use crate::{types::Name, Service, ServiceBuilder};
 
 macro_rules! test_suites {
   ($runtime:ident {
@@ -28,19 +28,15 @@ pub(crate) async fn make_service<R: Runtime>() -> Service<R> {
 }
 
 pub(crate) async fn make_service_with_service_name<R: Runtime>(name: &str) -> Service<R> {
-  ServiceBuilder::new(
-    Name::from("testhost."),
-    Name::from("hostname"),
-    name.into(),
-  )
-  .with_domain("local.".into())
-  .with_port(80)
-  .with_ip("192.168.0.42".parse().unwrap())
-  .with_ip("2620:0:1000:1900:b0c2:d0b2:c411:18bc".parse().unwrap())
-  .with_txt_record("Local web server".into())
-  .finalize::<R>()
-  .await
-  .unwrap()
+  ServiceBuilder::new(Name::from("testhost."), Name::from("hostname"), name.into())
+    .with_domain("local.".into())
+    .with_port(80)
+    .with_ip("192.168.0.42".parse().unwrap())
+    .with_ip("2620:0:1000:1900:b0c2:d0b2:c411:18bc".parse().unwrap())
+    .with_txt_record("Local web server".into())
+    .finalize::<R>()
+    .await
+    .unwrap()
 }
 
 fn tokio_run<F>(f: F)

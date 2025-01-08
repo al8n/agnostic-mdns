@@ -81,18 +81,6 @@ pub struct SRV {
 
 impl SRV {
   /// Creates a new SRV record data.
-  ///
-  /// # Arguments
-  ///
-  /// * `priority` - lower values have a higher priority and clients will attempt to use these
-  ///                first.
-  /// * `weight` - for servers with the same priority, higher weights will be chosen more often.
-  /// * `port` - the socket port number on which the service is listening.
-  /// * `target` - like CNAME, this is the target domain name to which the service is associated.
-  ///
-  /// # Return value
-  ///
-  /// The newly constructed SRV record data.
   #[inline]
   pub const fn new(priority: u16, weight: u16, port: u16, target: Name) -> Self {
     Self {

@@ -13,8 +13,8 @@ use smallvec_wrapper::{MediumVec, OneOrMore};
 use triomphe::Arc;
 
 use super::{
+  types::{Answer, Message, ProtoError, Query, Record, OP_CODE_QUERY, RESPONSE_CODE_NO_ERROR},
   utils::{multicast_udp4_socket, multicast_udp6_socket},
-  types::{Message, Answer, EncodeError, Record, Query, OP_CODE_QUERY, RESPONSE_CODE_NO_ERROR},
   Service, Zone, IPV4_MDNS, IPV6_MDNS, MAX_PAYLOAD_SIZE, MDNS_PORT,
 };
 
@@ -307,6 +307,7 @@ impl<R: Runtime, Z: Zone> Processor<R, Z> {
         questions.join(", ")
       );
     }
+    panic!("mdns: asdasdasd");
 
     // See section 18 of RFC 6762 for rules about DNS headers.
     let resp = |answers: OneOrMore<Record>, unicast: bool| -> Option<Answer> {
@@ -379,7 +380,7 @@ impl<R: Runtime, Z: Zone> Processor<R, Z> {
     //     In the Query Section of a Multicast DNS query, the top bit of the
     //     qclass field is used to indicate that unicast responses are preferred
     //     for this particular question.  (See Section 5.4.)
-    let qc = query.query_class() as u16;
+    let qc: u16 = query.query_class().into();
     let res = if (qc & (1 << 15)) != 0 || FORCE_UNICAST_RESPONSES {
       (OneOrMore::new(), records)
     } else {
@@ -394,7 +395,7 @@ impl<R: Runtime, Z: Zone> Processor<R, Z> {
     msg: Answer,
     from: SocketAddr,
     _unicast: bool,
-  ) -> Result<usize, Either<EncodeError, io::Error>> {
+  ) -> Result<usize, Either<ProtoError, io::Error>> {
     // TODO(reddaly): Respect the unicast argument, and allow sending responses
     // over multicast.
 
