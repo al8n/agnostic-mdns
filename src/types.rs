@@ -35,16 +35,6 @@ const MAX_DOMAIN_NAME_WIRE_OCTETS: usize = 255;
 /// not something a well written implementation should ever do, so we leave them
 /// to trip the maximum compression pointer check.
 const MAX_COMPRESSION_POINTERS: usize = (MAX_DOMAIN_NAME_WIRE_OCTETS + 1) / 2 - 2;
-/// This is the maximum length of a domain name in presentation format. The
-/// maximum wire length of a domain name is 255 octets (see above), with the
-/// maximum label length being 63. The wire format requires one extra byte over
-/// the presentation format, reducing the number of octets by 1. Each label in
-/// the name will be separated by a single period, with each octet in the label
-/// expanding to at most 4 bytes (\DDD). If all other labels are of the maximum
-/// length, then the final label can only be 61 octets long to not exceed the
-/// maximum allowed wire length.
-const MAX_DOMAIN_NAME_PRESENTATION_LENGTH: usize =
-  61 * 4 + 1 + 63 * 4 + 1 + 63 * 4 + 1 + 63 * 4 + 1;
 
 const COMPRESSION_POINTER_MASK: u16 = 0xC000;
 const MESSAGE_HEADER_SIZE: usize = 12;
@@ -154,6 +144,7 @@ pub enum DNSClass {
   IN = 1,
   // /// Unicast response desired, as per 5.4 in RFC
   // FORCE_UNICAST_RESPONSES = 32769,
+  /// Unknown DNS class
   UNKNOWN(u16),
 }
 

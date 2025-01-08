@@ -9,6 +9,7 @@ use super::{ProtoError, Record, SlicableSmolStr, ANCOUNT_OFFSET, MESSAGE_HEADER_
 const BITS: u16 = (1 << 15) // Response set to true
   | (1 << 10); // Authoritative set to true
 
+#[derive(Debug)]
 pub(crate) struct Answer {
   id: u16,
   records: OneOrMore<Record>,
@@ -19,6 +20,18 @@ impl Answer {
     Self { id, records }
   }
 
+  // 18.3: OPCODE - must be zero in response (OpcodeQuery == 0)
+  // 18.4: AA (Authoritative Answer) Bit - must be set to 1
+  // 18.2: QR (Query/Response) Bit - must be set to 1 in response.
+  //
+  // The following fields must all be set to 0:
+  //  18.5: TC (TRUNCATED) Bit
+  //  18.6: RD (Recursion Desired) Bit
+  //  18.7: RA (Recursion Available) Bit
+  //  18.8: Z (Zero) Bit
+  //  18.9: AD (Authentic Data) Bit
+  //  18.10: CD (Checking Disabled) Bit
+  //  18.11: RCODE (Response Code)
   pub(crate) fn encode(&self) -> Result<XXLargeVec<u8>, ProtoError> {
     let mut hbuf = [0u8; MESSAGE_HEADER_SIZE];
     hbuf[0..2].copy_from_slice(&self.id.to_be_bytes());

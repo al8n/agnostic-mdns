@@ -1,9 +1,11 @@
 <div align="center">
-<h1>agnostic-mdns</h1>
+<h1>Agnostic mDNS</h1>
 </div>
 <div align="center">
 
-A template for creating Rust open-source GitHub repo.
+Async runtime agnostic, simple mDNS client/server library in Rust.
+
+Port [HashiCorp's mdns](https://github.com/hashicorp/mdns) to Rust.
 
 [<img alt="github" src="https://img.shields.io/badge/github-al8n/agnostic--mdns-8da0cb?style=for-the-badge&logo=Github" height="22">][Github-url]
 <img alt="LoC" src="https://img.shields.io/endpoint?url=https%3A%2F%2Fgist.githubusercontent.com%2Fal8n%2F327b2a8aef9003246e45c6e47fe63937%2Fraw%2Fagnostic-mdns" height="22">
@@ -19,15 +21,45 @@ English | [简体中文][zh-cn-url]
 
 </div>
 
+## Introduction
+
+Simple mDNS client/server library in Rust. mDNS or Multicast DNS can be used to discover services on the local network without the use of an authoritative DNS server. This enables peer-to-peer discovery. It is important to note that many networks restrict the use of multicasting, which prevents mDNS from functioning. Notably, multicast cannot be used in any sort of cloud, or shared infrastructure environment. However it works well in most office, home, or private infrastructure environments.
+
 ## Installation
 
-```toml
-[dependencies]
-agnostic-mdns = "0.1"
+- `tokio`
+
+  ```toml
+  [dependencies]
+  agnostic-mdns = { version = "0.1", features = ["tokio"] }
+  ```
+
+- `async-std`
+  
+  ```toml
+  [dependencies]
+  agnostic-mdns = { version = "0.1", features = ["async-std"] }
+  ```
+
+- `smol`
+  
+  ```toml
+  [dependencies]
+  agnostic-mdns = { version = "0.1", features = ["smol"] }
+  ```
+
+## Example
+
+```rust
+use agnostic_mdns::;
+
 ```
 
-## Features
-- [x] Create a Rust open-source repo fast 
+## Pedigree
+
+- This mdns code is port from [HashiCorp's mdns](https://github.com/hashicorp/mdns) implementation.
+
+- The DNS message encoding/decoding is inspired by [miekg's dns](https://github.com/miekg/dns) implementation.
 
 #### License
 

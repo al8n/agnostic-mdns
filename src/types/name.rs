@@ -1,7 +1,13 @@
-use std::collections::HashSet;
+use std::{
+  collections::HashSet,
+  net::{IpAddr, Ipv4Addr, Ipv6Addr},
+};
 
 use smallvec_wrapper::XXLargeVec;
 use smol_str::{format_smolstr, SmolStr};
+
+const IPV4_LABEL_MAX_LEN: usize = 29; // xxx.xxx.xxx.xxx.in-addr.arpa.
+const IPV6_LABEL_MAX_LEN: usize = 73; // 32 hex digits + 32 dots + 9 chars suffix
 
 use super::{
   ddd_to_byte, escape_byte, is_ddd, CompressionMap, ProtoError, SlicableSmolStr,
@@ -24,6 +30,110 @@ impl PartialEq for Name {
 
 impl Eq for Name {}
 
+impl From<SmolStr> for Name {
+  fn from(name: SmolStr) -> Self {
+    match name.parse::<IpAddr>() {
+      Ok(ip) => ip.into(),
+      Err(_) => Self {
+        fqdn: is_fqdn(&name),
+        name,
+      },
+    }
+  }
+}
+
+impl From<&str> for Name {
+  fn from(name: &str) -> Self {
+    match name.parse::<IpAddr>() {
+      Ok(ip) => ip.into(),
+      Err(_) => Self {
+        name: SmolStr::new(name),
+        fqdn: is_fqdn(name),
+      },
+    }
+  }
+}
+
+impl From<IpAddr> for Name {
+  fn from(value: IpAddr) -> Self {
+    match value {
+      IpAddr::V4(ip) => ip.into(),
+      IpAddr::V6(ip) => ip.into(),
+    }
+  }
+}
+
+impl From<Ipv4Addr> for Name {
+  fn from(ip: Ipv4Addr) -> Self {
+    let mut buf = [0u8; IPV4_LABEL_MAX_LEN];
+    let mut pos = 0;
+
+    // Get octets directly as array
+    let octets = ip.octets();
+
+    // Write in reverse
+    for &octet in octets.iter().rev() {
+      let len = write_decimal(octet, &mut buf[pos..]);
+      pos += len;
+      buf[pos] = b'.';
+      pos += 1;
+    }
+
+    // Write suffix
+    let suffix = b"in-addr.arpa.";
+    buf[pos..pos + suffix.len()].copy_from_slice(suffix);
+    pos += suffix.len();
+
+    // Safe as we're writing valid ASCII
+    Self {
+      name: SmolStr::new(std::str::from_utf8(&buf[..pos]).unwrap()),
+      fqdn: true,
+    }
+  }
+}
+
+impl From<Ipv6Addr> for Name {
+  fn from(ip: Ipv6Addr) -> Self {
+    let mut buf = [0u8; IPV6_LABEL_MAX_LEN];
+    let mut pos = 0;
+
+    // Get segments directly as array
+    let segments = ip.segments();
+
+    // Process each segment in reverse
+    for &segment in segments.iter().rev() {
+      // Write 4 hex digits in reverse
+      let d4 = segment & 0xF;
+      let d3 = (segment >> 4) & 0xF;
+      let d2 = (segment >> 8) & 0xF;
+      let d1 = (segment >> 12) & 0xF;
+
+      // Write in reverse order with dots
+      for &d in &[d4, d3, d2, d1] {
+        buf[pos] = if d < 10 {
+          b'0' + d as u8
+        } else {
+          b'a' + (d as u8 - 10)
+        };
+        pos += 1;
+        buf[pos] = b'.';
+        pos += 1;
+      }
+    }
+
+    // Write suffix
+    let suffix = b"ip6.arpa.";
+    buf[pos..pos + suffix.len()].copy_from_slice(suffix);
+    pos += suffix.len();
+
+    // Safe as we're writing valid ASCII
+    Self {
+      name: SmolStr::new(std::str::from_utf8(&buf[..pos]).unwrap()),
+      fqdn: true,
+    }
+  }
+}
+
 impl core::hash::Hash for Name {
   fn hash<H: core::hash::Hasher>(&self, state: &mut H) {
     self.name.hash(state);
@@ -39,16 +149,6 @@ impl PartialOrd for Name {
 impl Ord for Name {
   fn cmp(&self, other: &Self) -> std::cmp::Ordering {
     self.name.cmp(&other.name)
-  }
-}
-
-impl From<&str> for Name {
-  fn from(name: &str) -> Self {
-    let fqdn = is_fqdn(name);
-    Self {
-      name: SmolStr::new(name),
-      fqdn,
-    }
   }
 }
 
@@ -82,25 +182,6 @@ impl core::fmt::Display for Name {
 }
 
 impl Name {
-  /// Appends a name to the current name in FQDN format.
-  pub fn append_fqdn(&self, other: &str) -> Self {
-    let name = format_smolstr!(
-      "{}.{}.",
-      self.name.as_str().trim_matches('.'),
-      other.trim_matches('.')
-    );
-    Self { name, fqdn: true }
-  }
-
-  /// Appends a name to the current name
-  pub fn append(&self, other: &Name) -> Self {
-    let name = format_smolstr!("{}{}", self.name.as_str(), other.name.as_str());
-    Self {
-      fqdn: is_fqdn(name.as_str()),
-      name,
-    }
-  }
-
   /// Returns `true` if the name is fully qualified.
   #[inline]
   pub const fn is_fqdn(&self) -> bool {
@@ -111,6 +192,25 @@ impl Name {
   #[inline]
   pub fn as_str(&self) -> &str {
     &self.name
+  }
+
+  /// Appends a name to the current name
+  pub(crate) fn append(&self, other: &Name) -> Self {
+    let name = format_smolstr!("{}{}", self.name.as_str(), other.name.as_str());
+    Self {
+      fqdn: is_fqdn(name.as_str()),
+      name,
+    }
+  }
+
+  /// Appends a name to the current name in FQDN format.
+  pub(crate) fn append_fqdn(&self, other: &str) -> Self {
+    let name = format_smolstr!(
+      "{}.{}.",
+      self.name.as_str().trim_matches('.'),
+      other.trim_matches('.')
+    );
+    Self { name, fqdn: true }
   }
 
   #[inline]
@@ -531,6 +631,29 @@ const fn is_domain_name_label_special(b: u8) -> bool {
     b,
     b'.' | b' ' | b'\'' | b'@' | b';' | b'(' | b')' | b'"' | b'\\'
   )
+}
+
+#[inline]
+fn write_decimal(mut num: u8, buf: &mut [u8]) -> usize {
+  if num == 0 {
+    buf[0] = b'0';
+    return 1;
+  }
+
+  let mut temp = [0u8; 3];
+  let mut pos = 0;
+
+  while num > 0 {
+    temp[pos] = b'0' + (num % 10);
+    num /= 10;
+    pos += 1;
+  }
+
+  // Write in reverse to get correct order
+  for i in 0..pos {
+    buf[i] = temp[pos - 1 - i];
+  }
+  pos
 }
 
 smallvec_wrapper::smallvec_wrapper!(

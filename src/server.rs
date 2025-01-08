@@ -3,19 +3,19 @@ use std::io;
 
 use agnostic::{
   net::{Net, UdpSocket},
-  AsyncSpawner, Runtime,
+  AsyncSpawner, Runtime, RuntimeLite,
 };
 use async_channel::{Receiver, Sender};
 use atomic_refcell::AtomicRefCell;
 use either::Either;
-use futures_util::{stream::FuturesUnordered, FutureExt, StreamExt as _};
+use futures::{stream::FuturesUnordered, FutureExt, StreamExt as _};
 use smallvec_wrapper::{MediumVec, OneOrMore};
 use triomphe::Arc;
 
 use super::{
   types::{Answer, Message, ProtoError, Query, Record, OP_CODE_QUERY, RESPONSE_CODE_NO_ERROR},
   utils::{multicast_udp4_socket, multicast_udp6_socket},
-  Service, Zone, IPV4_MDNS, IPV6_MDNS, MAX_PAYLOAD_SIZE, MDNS_PORT,
+  Zone, IPV4_MDNS, IPV6_MDNS, MAX_PAYLOAD_SIZE, MDNS_PORT,
 };
 
 const FORCE_UNICAST_RESPONSES: bool = false;
@@ -84,16 +84,17 @@ impl ServerOptions {
 }
 
 /// The builder for [`Server`].
-pub struct Server<R: Runtime, Z: Zone = Service<R>> {
+pub struct Server<Z: Zone> {
   zone: Arc<Z>,
   opts: ServerOptions,
-  handles: AtomicRefCell<FuturesUnordered<<R::Spawner as AsyncSpawner>::JoinHandle<()>>>,
+  handles: AtomicRefCell<
+    FuturesUnordered<<<Z::Runtime as RuntimeLite>::Spawner as AsyncSpawner>::JoinHandle<()>>,
+  >,
   shutdown_tx: Sender<()>,
 }
 
-impl<R, Z> Drop for Server<R, Z>
+impl<Z> Drop for Server<Z>
 where
-  R: Runtime,
   Z: Zone,
 {
   fn drop(&mut self) {
@@ -101,7 +102,7 @@ where
   }
 }
 
-impl<R: Runtime, Z: Zone> Server<R, Z> {
+impl<Z: Zone> Server<Z> {
   /// Creates a new mDNS server.
   pub async fn new(zone: Z, opts: ServerOptions) -> io::Result<Self> {
     let (shutdown_tx, shutdown_rx) = async_channel::bounded(1);
@@ -109,10 +110,10 @@ impl<R: Runtime, Z: Zone> Server<R, Z> {
     let zone = Arc::new(zone);
     let handles = FuturesUnordered::new();
 
-    let v4 = match multicast_udp4_socket::<R>(MDNS_PORT) {
+    let v4 = match multicast_udp4_socket::<Z::Runtime>(MDNS_PORT) {
       Ok(conn) => {
         conn.join_multicast_v4(IPV4_MDNS, opts.ipv4_interface)?;
-        Some(Processor::<R, Z>::new(
+        Some(Processor::<Z::Runtime, Z>::new(
           conn,
           zone.clone(),
           opts.log_empty_responses,
@@ -125,10 +126,10 @@ impl<R: Runtime, Z: Zone> Server<R, Z> {
       }
     };
 
-    let v6 = match multicast_udp6_socket::<R>(MDNS_PORT) {
+    let v6 = match multicast_udp6_socket::<Z::Runtime>(MDNS_PORT) {
       Ok(conn) => {
         conn.join_multicast_v6(&IPV6_MDNS, opts.ipv6_interface)?;
-        Some(Processor::<R, Z>::new(
+        Some(Processor::<Z::Runtime, Z>::new(
           conn,
           zone.clone(),
           opts.log_empty_responses,
@@ -143,14 +144,14 @@ impl<R: Runtime, Z: Zone> Server<R, Z> {
 
     match (v4, v6) {
       (Some(v4), Some(v6)) => {
-        handles.push(R::Spawner::spawn(v4.process()));
-        handles.push(R::Spawner::spawn(v6.process()));
+        handles.push(<Z::Runtime as RuntimeLite>::Spawner::spawn(v4.process()));
+        handles.push(<Z::Runtime as RuntimeLite>::Spawner::spawn(v6.process()));
       }
       (Some(v4), None) => {
-        handles.push(R::Spawner::spawn(v4.process()));
+        handles.push(<Z::Runtime as RuntimeLite>::Spawner::spawn(v4.process()));
       }
       (None, Some(v6)) => {
-        handles.push(R::Spawner::spawn(v6.process()));
+        handles.push(<Z::Runtime as RuntimeLite>::Spawner::spawn(v6.process()));
       }
       (None, None) => {
         return Err(io::Error::new(
@@ -222,17 +223,21 @@ impl<R: Runtime, Z: Zone> Processor<R, Z> {
     let mut buf = vec![0; MAX_PAYLOAD_SIZE];
 
     loop {
-      futures_util::select! {
-        _ = self.shutdown_rx.recv().fuse() => return,
-        default => {
-          let (len, addr) = match self.conn.recv_from(&mut buf).await {
+      futures::select! {
+        _ = self.shutdown_rx.recv().fuse() => {
+          tracing::info!("mdns: shutting down server packet processor");
+          return
+        },
+        res = self.conn.recv_from(&mut buf).fuse() => {
+          let (len, addr) = match res {
             Ok((len, addr)) => (len, addr),
             Err(e) => {
-              tracing::error!(err=%e, "mdns: failed to receive data from UDP socket");
+              // tracing::error!(err=%e, "mdns: failed to receive data from UDP socket");
               continue;
             }
           };
 
+          tracing::info!("mdns: received packet from {}", addr);
           let msg = match Message::decode(&buf[..len]) {
             Ok(msg) => msg,
             Err(e) => {
@@ -281,9 +286,9 @@ impl<R: Runtime, Z: Zone> Processor<R, Z> {
     let mut unicast_answers = OneOrMore::new();
 
     // Handle each query
-    let queries = query.questions();
+    let queries = query.queries();
     for query in queries {
-      match self.handle_question(query).await {
+      match self.handle_query_message(query).await {
         Ok((mrecs, urecs)) => {
           multicast_answers.extend(mrecs);
           unicast_answers.extend(urecs)
@@ -307,8 +312,6 @@ impl<R: Runtime, Z: Zone> Processor<R, Z> {
         questions.join(", ")
       );
     }
-    panic!("mdns: asdasdasd");
-
     // See section 18 of RFC 6762 for rules about DNS headers.
     let resp = |answers: OneOrMore<Record>, unicast: bool| -> Option<Answer> {
       // 18.1: ID (Query Identifier)
@@ -322,27 +325,7 @@ impl<R: Runtime, Z: Zone> Processor<R, Z> {
         return None;
       }
 
-      // let mut msg = Message::new();
-      // let mut hdr = Header::new();
-      // hdr
-      //   .set_id(id)
-      //   // 18.3: OPCODE - must be zero in response (OpcodeQuery == 0)
-      //   .set_op_code(OpCode::Query)
-      //   // 18.4: AA (Authoritative Answer) Bit - must be set to 1
-      //   .set_authoritative(true)
-      //   // 18.2: QR (Query/Response) Bit - must be set to 1 in response.
-      //   .set_message_type(MessageType::Response);
-      // // The following fields must all be set to 0:
-      // // 18.5: TC (TRUNCATED) Bit
-      // // 18.6: RD (Recursion Desired) Bit
-      // // 18.7: RA (Recursion Available) Bit
-      // // 18.8: Z (Zero) Bit
-      // // 18.9: AD (Authentic Data) Bit
-      // // 18.10: CD (Checking Disabled) Bit
-      // // 18.11: RCODE (Response Code)
-      // msg.set_header(hdr).add_answers(answers);
-      let msg = Answer::new(id, answers);
-      Some(msg)
+      Some(Answer::new(id, answers))
     };
 
     if let Some(mresp) = resp(multicast_answers, false) {
@@ -359,7 +342,7 @@ impl<R: Runtime, Z: Zone> Processor<R, Z> {
     }
   }
 
-  async fn handle_question(
+  async fn handle_query_message(
     &self,
     query: &Query,
   ) -> Result<(OneOrMore<Record>, OneOrMore<Record>), Z::Error> {
@@ -398,7 +381,6 @@ impl<R: Runtime, Z: Zone> Processor<R, Z> {
   ) -> Result<usize, Either<ProtoError, io::Error>> {
     // TODO(reddaly): Respect the unicast argument, and allow sending responses
     // over multicast.
-
     let data = msg.encode().map_err(Either::Left)?;
     self.conn.send_to(&data, from).await.map_err(Either::Right)
   }

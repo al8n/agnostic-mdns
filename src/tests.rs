@@ -2,7 +2,7 @@ use core::future::Future;
 
 use agnostic::Runtime;
 
-use crate::{types::Name, Service, ServiceBuilder};
+use super::{Service, ServiceBuilder};
 
 macro_rules! test_suites {
   ($runtime:ident {
@@ -11,7 +11,7 @@ macro_rules! test_suites {
     $(
       paste::paste! {
         #[test]
-        fn [< $runtime $name >]() {
+        fn [< $runtime _ $name >]() {
           $crate::tests::[< $runtime _run >]($name::<agnostic::[< $runtime >]::[< $runtime:camel Runtime >]>());
         }
       }
@@ -28,8 +28,9 @@ pub(crate) async fn make_service<R: Runtime>() -> Service<R> {
 }
 
 pub(crate) async fn make_service_with_service_name<R: Runtime>(name: &str) -> Service<R> {
-  ServiceBuilder::new(Name::from("testhost."), Name::from("hostname"), name.into())
+  ServiceBuilder::new("hostname".into(), name.into())
     .with_domain("local.".into())
+    .with_hostname("testhost.".into())
     .with_port(80)
     .with_ip("192.168.0.42".parse().unwrap())
     .with_ip("2620:0:1000:1900:b0c2:d0b2:c411:18bc".parse().unwrap())
@@ -39,12 +40,35 @@ pub(crate) async fn make_service_with_service_name<R: Runtime>(name: &str) -> Se
     .unwrap()
 }
 
+/// Initialize the tracing for the unit tests.
+pub fn initialize_tests_tracing() {
+  use std::sync::Once;
+  static TRACE: Once = Once::new();
+  TRACE.call_once(|| {
+    let filter = std::env::var("AGNOSTIC_MDNS_TESTING_LOG").unwrap_or_else(|_| "info".to_owned());
+    tracing::subscriber::set_global_default(
+      tracing_subscriber::fmt::fmt()
+        .without_time()
+        .with_line_number(true)
+        .with_env_filter(filter)
+        .with_file(false)
+        .with_target(true)
+        .with_ansi(true)
+        .finish(),
+    )
+    .unwrap();
+  });
+}
+
 fn tokio_run<F>(f: F)
 where
   F: Future<Output = ()>,
 {
-  tokio::runtime::Builder::new_current_thread()
+  initialize_tests_tracing();
+
+  tokio::runtime::Builder::new_multi_thread()
     .enable_all()
+    .max_blocking_threads(64)
     .build()
     .unwrap()
     .block_on(f);
@@ -54,6 +78,7 @@ fn smol_run<F>(f: F)
 where
   F: Future<Output = ()>,
 {
+  initialize_tests_tracing();
   smol::block_on(f);
 }
 
@@ -61,5 +86,6 @@ fn async_std_run<F>(f: F)
 where
   F: Future<Output = ()>,
 {
+  initialize_tests_tracing();
   async_std::task::block_on(f);
 }

@@ -9,6 +9,7 @@ const PTRVALUE: u16 = 12;
 const SRVVALUE: u16 = 33;
 const TXTVALUE: u16 = 16;
 
+/// Unknown record type string error.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, thiserror::Error)]
 #[error("unknown record type string: {0}")]
 pub struct UnknownRecordTypeStr(pub SmolStr);

@@ -1,23 +1,27 @@
 [package]
 name = "agnostic-mdns"
-version = "0.0.0"
+version = "0.1.0"
 edition = "2021"
 repository = "https://github.com/al8n/agnostic-mdns"
 homepage = "https://github.com/al8n/agnostic-mdns"
 documentation = "https://docs.rs/agnostic-mdns"
-description = "A template for creating Rust open-source repo on GitHub"
+description = "Async runtime agnostic, simple mDNS client/server library in Rust."
 license = "MIT OR Apache-2.0"
 rust-version = "1.76"
 
-[[bench]]
-path = "benches/foo.rs"
-name = "foo"
-harness = false
+[[example]]
+name = "tokio"
+path = "examples/tokio.rs"
+required-features = ["tokio"]
 
 [features]
 default = ["std"]
 alloc = []
 std = []
+
+tokio = ["agnostic/tokio"]
+async-std = ["agnostic/async-std"]
+smol = ["agnostic/smol"]
 
 [dependencies]
 agnostic = { version = "0.4", features = ["dns", "net"] }
@@ -25,7 +29,7 @@ atomic_refcell = "0.1"
 async-channel = "2"
 bitflags = "2"
 either = "1"
-futures-util = "0.3"
+futures = "0.3"
 smol_str = "0.3"
 smallvec-wrapper = "0.2"
 socket2 = "0.5"
@@ -41,9 +45,12 @@ rustix = { version = "0.38", features = ["system"] }
 hostname = "0.4"
 
 [dev-dependencies]
-regex = "1"
 paste = "1"
 agnostic = { version = "0.4", features = ["dns", "net", "tokio", "async-std", "smol"] }
+tracing-subscriber = { version = "0.3", features = [
+  "env-filter",
+  "tracing-log",
+] }
 tokio = { version = "1", features = ["full"] }
 smol = "2"
 async-std = "1"

@@ -13,7 +13,10 @@ use agnostic::{
 };
 use async_channel::Sender;
 use atomic_refcell::AtomicRefCell;
-use futures_util::FutureExt;
+use futures::{
+  // channel::mpsc::{self, Receiver, Sender},
+  SinkExt, FutureExt, StreamExt,
+};
 use smol_str::SmolStr;
 use triomphe::Arc;
 
@@ -292,20 +295,20 @@ where
 
   let (shutdown_tx, shutdown_rx) = async_channel::bounded::<()>(1);
 
-  let timeout = R::sleep(params.timeout.max(Duration::from_secs(1)));
-  let shutdown_rx1 = shutdown_rx.clone();
-  let shutdown_tx1 = shutdown_tx.clone();
-  R::spawn_detach(async move {
-    futures_util::select! {
-      // TODO: context.Contxt, not using timeout here
-      _ = timeout.fuse() => {
-        if shutdown_tx1.close() {
-          tracing::info!("mdns: closing client");
-        }
-      }
-      _ = shutdown_rx1.recv().fuse() => {}
-    }
-  });
+  // let timeout = R::sleep(params.timeout.max(Duration::from_secs(1)));
+  // let shutdown_rx1 = shutdown_rx.clone();
+  // let shutdown_tx1 = shutdown_tx.clone();
+  // R::spawn_detach(async move {
+  //   futures::select! {
+  //     // TODO: context.Contxt, not using timeout here
+  //     _ = timeout.fuse() => {
+  //       if shutdown_tx1.close() {
+  //         tracing::info!("mdns: closing client");
+  //       }
+  //     }
+  //     _ = shutdown_rx1.recv().fuse() => {}
+  //   }
+  // });
 
   client
     .query_in(
@@ -354,7 +357,9 @@ impl<R: Runtime> Client<R> {
     shutdown_rx: Receiver<()>,
   ) -> io::Result<()> {
     // Start listening for response packets
-    let (msg_tx, msg_rx) = async_channel::bounded::<(Message, SocketAddr)>(32);
+    // let (msg_tx, msg_rx) = async_channel::bounded::<(Message, SocketAddr)>(32);
+    let (msg_tx, mut msg_rx) = futures::channel::mpsc::channel::<(Message, SocketAddr)>(32);
+    // let (msg_tx, msg_rx) = async_channel::unbounded::<(Message, SocketAddr)>();
 
     if self.use_ipv4 {
       if let Some(conn) = &self.ipv4_unicast_conn {
@@ -390,119 +395,123 @@ impl<R: Runtime> Client<R> {
     self.send_query(q).await?;
 
     // Map the in-progress responses
-    let mut inprogress = HashMap::new();
+    let mut inprogress: HashMap<Name, Arc<AtomicRefCell<ServiceEntryBuilder>>> = HashMap::new();
 
-    // Listen until we reach the timeout
+    // Listen until we reach the timeout    
     let finish = R::sleep(timeout);
-    futures_util::pin_mut!(finish);
+    futures::pin_mut!(finish);
 
     loop {
-      futures_util::select! {
-        resp = msg_rx.recv().fuse() => {
-          if let Ok((msg, src_addr)) = resp {
-            let records = msg.into_iter();
-            let mut inp = None;
-            for record in records {
-              // TODO(reddaly): Check that response corresponds to serviceAddr?
-              let (header, data) = record.into_components();
-              match data {
-                RecordData::PTR(data) => {
-                  // Create new entry for this
-                  let ent = ensure_name(&mut inprogress, data);
-                  inp = Some(ent);
-                },
-                RecordData::SRV(data) => {
-                  let name = header.name().clone();
-                  // Check for a target mismatch
-                  if data.target().ne(&name) {
-                    alias(&mut inprogress, name.clone(), data.target().clone());
+      futures::select! {
+        resp = msg_rx.next().fuse() => {
+          match resp {
+            None => {
+              tracing::error!("mdns client: failed to receive packet");
+            },
+            Some((msg, src_addr)) => {
+              println!("recv message: {:?}", msg);
+              let records = msg.into_iter();
+              let mut inp = None;
+              for record in records {
+                // TODO(reddaly): Check that response corresponds to serviceAddr?
+                let (header, data) = record.into_components();
+                match data {
+                  RecordData::PTR(data) => {
+                    // Create new entry for this
+                    let ent = ensure_name(&mut inprogress, data);
+                    inp = Some(ent);
+                  },
+                  RecordData::SRV(data) => {
+                    let name = header.name().clone();
+                    // Check for a target mismatch
+                    if data.target().ne(&name) {
+                      alias(&mut inprogress, name.clone(), data.target().clone());
 
-                    // Get the port
+                      // Get the port
+                      let ent = ensure_name(&mut inprogress, name);
+                      let mut ref_mut = ent.borrow_mut();
+                      ref_mut.host = data.target().clone();
+                      ref_mut.port = data.port();
+                    } else {
+                      // Get the port
+                      let ent = ensure_name(&mut inprogress, name.clone());
+                      let mut ref_mut = ent.borrow_mut();
+                      ref_mut.port = data.port();
+                      ref_mut.host = data.into_target();
+                    }
+                  },
+                  RecordData::TXT(data) => {
+                    let name = header.name().clone();
+                    // Pull out the txt
                     let ent = ensure_name(&mut inprogress, name);
                     let mut ref_mut = ent.borrow_mut();
-                    ref_mut.host = data.target().clone();
-                    ref_mut.port = data.port();
-                  } else {
-                    // Get the port
-                    let ent = ensure_name(&mut inprogress, name.clone());
+                    ref_mut.infos = data.clone();
+                    ref_mut.has_txt = true;
+                    drop(ref_mut);
+                    inp = Some(ent);
+                  },
+                  RecordData::A(data) => {
+                    let name = header.name().clone();
+                    // Pull out the IP
+                    let ent = ensure_name(&mut inprogress, name);
                     let mut ref_mut = ent.borrow_mut();
-                    ref_mut.port = data.port();
-                    ref_mut.host = data.into_target();
-                  }
-                },
-                RecordData::TXT(data) => {
-                  let name = header.name().clone();
-                  // Pull out the txt
-                  let ent = ensure_name(&mut inprogress, name);
-                  let mut ref_mut = ent.borrow_mut();
-                  ref_mut.infos = data.clone();
-                  ref_mut.has_txt = true;
-                  drop(ref_mut);
-                  inp = Some(ent);
-                },
-                RecordData::A(data) => {
-                  let name = header.name().clone();
-                  // Pull out the IP
-                  let ent = ensure_name(&mut inprogress, name);
-                  let mut ref_mut = ent.borrow_mut();
-                  ref_mut.ipv4 = Some(data);
-                  drop(ref_mut);
-                  inp = Some(ent);
-                },
-                RecordData::AAAA(data) => {
-                  let name = header.name().clone();
-                  // Pull out the IP
-                  let ent = ensure_name(&mut inprogress, name);
-                  let mut ref_mut = ent.borrow_mut();
-                  ref_mut.ipv6 = Some(data);
-                  // link-local IPv6 addresses must be qualified with a zone (interface). Zone is
-                  // specific to this machine/network-namespace and so won't be carried in the
-                  // mDNS message itself. We borrow the zone from the source address of the UDP
-                  // packet, as the link-local address should be valid on that interface.
-                  if Ipv6AddrExt::is_unicast_link_local(&data) || data.is_multicast_link_local() {
-                    if let SocketAddr::V6(addr) = src_addr {
-                      let zone = addr.scope_id();
-                      ref_mut.zone = Some(zone);
+                    ref_mut.ipv4 = Some(data);
+                    drop(ref_mut);
+                    inp = Some(ent);
+                  },
+                  RecordData::AAAA(data) => {
+                    let name = header.name().clone();
+                    // Pull out the IP
+                    let ent = ensure_name(&mut inprogress, name);
+                    let mut ref_mut = ent.borrow_mut();
+                    ref_mut.ipv6 = Some(data);
+                    // link-local IPv6 addresses must be qualified with a zone (interface). Zone is
+                    // specific to this machine/network-namespace and so won't be carried in the
+                    // mDNS message itself. We borrow the zone from the source address of the UDP
+                    // packet, as the link-local address should be valid on that interface.
+                    if Ipv6AddrExt::is_unicast_link_local(&data) || data.is_multicast_link_local() {
+                      if let SocketAddr::V6(addr) = src_addr {
+                        let zone = addr.scope_id();
+                        ref_mut.zone = Some(zone);
+                      }
                     }
-                  }
-                  drop(ref_mut);
-                  inp = Some(ent);
-                },
-              }
+                    drop(ref_mut);
+                    inp = Some(ent);
+                  },
+                }
 
-              match inp {
-                None => continue,
-                Some(ref ent) => {
-                  // Check if this entry is complete
-                  let mut ref_mut = ent.borrow_mut();
-                  if ref_mut.complete() {
-                    if ref_mut.sent {
-                      continue;
+                match inp {
+                  None => continue,
+                  Some(ref ent) => {
+                    // Check if this entry is complete
+                    let mut ref_mut = ent.borrow_mut();
+                    if ref_mut.complete() {
+                      if ref_mut.sent {
+                        continue;
+                      }
+                      ref_mut.sent = true;
+                      let entry = ref_mut.finalize();
+
+                      futures::select! {
+                        _ = tx.send(entry).fuse() => {},
+                        default => {},
+                      }
+                    } else {
+                      // Fire off a node specific query
+                      let question = Query::new(ref_mut.name.clone(), false);
+                      self.send_query(question).await.inspect_err(|e| {
+                        tracing::error!(err=%e, "mdns: failed to query instance {}", ref_mut.name);
+                      })?;
                     }
-                    ref_mut.sent = true;
-                    let entry = ref_mut.finalize();
 
-                    futures_util::select! {
-                      _ = tx.send(entry).fuse() => {},
-                      default => {},
-                    }
-                  } else {
-                    // Fire off a node specific query
-                    let question = Query::new(ref_mut.name.clone(), false);
-                    self.send_query(question).await.inspect_err(|e| {
-                      tracing::error!(err=%e, "mdns: failed to query instance {}", ref_mut.name);
-                    })?;
+                    drop(ref_mut);
                   }
-
-                  drop(ref_mut);
                 }
               }
-            }
+            },
           }
         },
-        _ = (&mut finish).fuse() => {
-          return Ok(());
-        }
+        // _ = (&mut finish).fuse() => return Ok(()),
       }
     }
   }
@@ -644,7 +653,8 @@ impl<R: Runtime> Client<R> {
 
 struct PacketReceiver<R: Runtime> {
   conn: Arc<<R::Net as Net>::UdpSocket>,
-  tx: Sender<(Message, SocketAddr)>,
+  // tx: Sender<(Message, SocketAddr)>,
+  tx: futures::channel::mpsc::Sender<(Message, SocketAddr)>,
   shutdown_rx: Receiver<()>,
 }
 
@@ -652,7 +662,8 @@ impl<R: Runtime> PacketReceiver<R> {
   #[inline]
   const fn new(
     conn: Arc<<R::Net as Net>::UdpSocket>,
-    tx: Sender<(Message, SocketAddr)>,
+    // tx: Sender<(Message, SocketAddr)>,
+    tx: futures::channel::mpsc::Sender<(Message, SocketAddr)>,
     shutdown_rx: Receiver<()>,
   ) -> Self {
     Self {
@@ -662,31 +673,39 @@ impl<R: Runtime> PacketReceiver<R> {
     }
   }
 
-  async fn run(self) {
+  async fn run(mut self) {
     let mut buf = vec![0; MAX_PAYLOAD_SIZE];
     loop {
-      futures_util::select! {
+      futures::select! {
         _ = self.shutdown_rx.recv().fuse() => {
           return;
         },
         res = self.conn.recv_from(&mut buf).fuse() => {
           match res {
             Ok((size, src)) => {
-              let msg = match Message::decode(&buf[..size]) {
+              let data = &buf[..size];
+              tracing::info!(from=%src, data=?data, "mdns client: received packet from {}", src);
+
+              let msg = match Message::decode(data) {
                 Ok(msg) => msg,
                 Err(e) => {
-                  tracing::error!(err=%e, "mdns: failed to deserialize packet");
+                  tracing::error!(err=%e, "mdns client: failed to deserialize packet");
                   continue;
                 }
               };
 
-              futures_util::select! {
-                _ = self.tx.send((msg, src)).fuse() => {},
+              futures::select! {
+                e = self.tx.send((msg, src)).fuse() => {
+                  if let Err(e) = e {
+                    tracing::error!(err=%e, "mdns client: failed to pass packet");
+                    return;
+                  }
+                },
                 _ = self.shutdown_rx.recv().fuse() => return,
               }
             },
             Err(e) => {
-              tracing::error!(err=%e, "mdns: failed to receive packet");
+              tracing::error!(err=%e, "mdns client: failed to receive packet");
             }
           }
         }

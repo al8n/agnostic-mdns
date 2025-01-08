@@ -2,6 +2,7 @@ use smallvec_wrapper::XXLargeVec;
 
 use super::{DNSClass, Name, ProtoError, RecordType, MESSAGE_HEADER_SIZE, QDCOUNT_OFFSET};
 
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Query {
   name: Name,
   ty: RecordType,

@@ -1,6 +1,8 @@
 use core::{convert::Infallible, error::Error, future::Future, marker::PhantomData, net::IpAddr};
 
-use std::{net::ToSocketAddrs, vec::Vec};
+use std::{io, net::ToSocketAddrs, vec::Vec};
+
+use crate::invalid_input_err;
 
 use super::types::{Name, Record, RecordData, RecordType, SRV};
 use agnostic::Runtime;
@@ -70,10 +72,10 @@ auto_impl!(std::sync::Arc<Z>, triomphe::Arc<Z>, std::boxed::Box<Z>,);
 
 /// A builder for creating a new [`Service`].
 pub struct ServiceBuilder {
-  instance: Name,
-  service: Name,
+  instance: SmolStr,
+  service: SmolStr,
   domain: Option<Name>,
-  hostname: Name,
+  hostname: Option<Name>,
   port: Option<u16>,
   ips: TinyVec<IpAddr>,
   txt: Vec<SmolStr>,
@@ -84,12 +86,12 @@ pub struct ServiceBuilder {
 
 impl ServiceBuilder {
   /// Returns a new ServiceBuilder with default values.
-  pub fn new(hostname: Name, instance: Name, service: Name) -> Self {
+  pub fn new(instance: SmolStr, service: SmolStr) -> Self {
     Self {
       instance,
       service,
       domain: None,
-      hostname,
+      hostname: None,
       port: None,
       ips: TinyVec::new(),
       txt: Vec::new(),
@@ -100,12 +102,12 @@ impl ServiceBuilder {
   }
 
   /// Gets the current instance name.
-  pub fn instance(&self) -> &Name {
+  pub fn instance(&self) -> &SmolStr {
     &self.instance
   }
 
   /// Gets the current service name.
-  pub fn service(&self) -> &Name {
+  pub fn service(&self) -> &SmolStr {
     &self.service
   }
 
@@ -121,13 +123,13 @@ impl ServiceBuilder {
   }
 
   /// Gets the current host name.
-  pub fn hostname(&self) -> &Name {
-    &self.hostname
+  pub fn hostname(&self) -> Option<&Name> {
+    self.hostname.as_ref()
   }
 
   /// Sets the host name for the service.
   pub fn with_hostname(mut self, hostname: Name) -> Self {
-    self.hostname = hostname;
+    self.hostname = Some(hostname);
     self
   }
 
@@ -227,24 +229,30 @@ impl ServiceBuilder {
   // check to ensure that the instance name does not conflict with other instance
   // names, and, if required, select a new name.  There may also be conflicting
   // hostName A/AAAA records.
-  pub async fn finalize<R>(self) -> Result<Service<R>, ServiceError>
+  pub async fn finalize<R>(self) -> io::Result<Service<R>>
   where
     R: Runtime,
   {
     let domain = match self.domain {
-      Some(domain) if !domain.is_fqdn() => return Err(ServiceError::NotFQDN(domain)),
+      Some(domain) if !domain.is_fqdn() => {
+        return Err(invalid_input_err(ServiceError::NotFQDN(domain)))
+      }
       Some(domain) => domain,
       None => Name::local_fqdn(),
     };
 
-    let hostname = if !self.hostname.is_fqdn() {
-      return Err(ServiceError::NotFQDN(self.hostname));
-    } else {
-      self.hostname
+    let hostname = match self.hostname {
+      Some(hostname) if !hostname.as_str().is_empty() => {
+        if !hostname.is_fqdn() {
+          return Err(invalid_input_err(ServiceError::NotFQDN(hostname)));
+        }
+        hostname
+      }
+      _ => Name::from_components(super::hostname_fqdn()?, true),
     };
 
     let port = match self.port {
-      None | Some(0) => return Err(ServiceError::PortNotFound),
+      None | Some(0) => return Err(invalid_input_err(ServiceError::PortNotFound)),
       Some(port) => port,
     };
 
@@ -254,9 +262,11 @@ impl ServiceBuilder {
       tmp_hostname
         .as_str()
         .to_socket_addrs()
-        .map_err(|e| ServiceError::IpNotFound {
-          hostname: tmp_hostname,
-          error: e.into(),
+        .map_err(|e| {
+          invalid_input_err(ServiceError::IpNotFound {
+            hostname: tmp_hostname,
+            error: e.into(),
+          })
         })?
         .map(|addr| addr.ip())
         .collect()
@@ -302,9 +312,9 @@ impl ServiceBuilder {
 /// Export a named service by implementing a [`Zone`].
 pub struct Service<R> {
   /// Instance name (e.g. "hostService name")
-  instance: Name,
+  instance: SmolStr,
   /// Service name (e.g. "_http._tcp.")
-  service: Name,
+  service: SmolStr,
   /// If blank, assumes "local"
   domain: Name,
   /// Host machine DNS name (e.g. "mymachine.net")
@@ -351,13 +361,13 @@ where
 impl<R> Service<R> {
   /// Returns the instance of the service.
   #[inline]
-  pub const fn instance(&self) -> &Name {
+  pub const fn instance(&self) -> &SmolStr {
     &self.instance
   }
 
   /// Returns the service of the mdns service.
   #[inline]
-  pub const fn service(&self) -> &Name {
+  pub const fn service(&self) -> &SmolStr {
     &self.service
   }
 
