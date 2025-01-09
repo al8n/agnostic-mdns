@@ -5,6 +5,8 @@ use core::{
 use std::{
   collections::{hash_map::Entry, HashMap},
   io,
+  pin::Pin,
+  task::{Context, Poll},
 };
 
 use agnostic::{
@@ -13,10 +15,7 @@ use agnostic::{
 };
 use async_channel::Sender;
 use atomic_refcell::AtomicRefCell;
-use futures::{
-  // channel::mpsc::{self, Receiver, Sender},
-  SinkExt, FutureExt, StreamExt,
-};
+use futures::{FutureExt, Stream};
 use smol_str::SmolStr;
 use triomphe::Arc;
 
@@ -147,6 +146,7 @@ pub struct QueryParam {
   timeout: Duration,
   ipv4_interface: Ipv4Addr,
   ipv6_interface: u32,
+  cap: Option<usize>,
   want_unicast_response: bool, // Unicast response desired, as per 5.4 in RFC
   // Whether to disable usage of IPv4 for MDNS operations. Does not affect discovered addresses.
   disable_ipv4: bool,
@@ -167,6 +167,7 @@ impl QueryParam {
       want_unicast_response: false,
       disable_ipv4: false,
       disable_ipv6: false,
+      cap: None,
     }
   }
 
@@ -257,22 +258,86 @@ impl QueryParam {
   pub const fn disable_ipv6(&self) -> bool {
     self.disable_ipv6
   }
+
+  /// Returns the channel capacity for the [`Lookup`] stream.
+  ///
+  /// If `None`, the channel is unbounded.
+  ///
+  /// Default is `None`.
+  #[inline]
+  pub const fn capacity(&self) -> Option<usize> {
+    self.cap
+  }
+
+  /// Sets the channel capacity for the [`Lookup`] stream.
+  ///
+  /// If `None`, the channel is unbounded.
+  ///
+  /// Default is `None`.
+  #[inline]
+  pub fn with_capacity(mut self, cap: Option<usize>) -> Self {
+    self.cap = cap;
+    self
+  }
 }
 
-/// A handle to send requests to the mDNS client.
-#[derive(Debug)]
-pub struct Producer(Sender<ServiceEntry>);
+/// A handle to cancel a lookup.
+#[derive(Debug, Clone)]
+pub struct Canceller(Sender<()>);
 
-/// Creates a new unbounded channel for mDNS queries.
-pub fn unbounded() -> (Producer, Receiver<ServiceEntry>) {
-  let (tx, rx) = async_channel::unbounded();
-  (Producer(tx), rx)
+impl Canceller {
+  /// Cancels the lookup.
+  ///
+  /// Returns `true` if the lookup was cancelled, `false` if it was already cancelled.
+  #[inline]
+  pub fn cancel(&self) -> bool {
+    self.0.close()
+  }
 }
 
-/// Creates a new bounded channel for mDNS queries.
-pub fn bounded(size: usize) -> (Producer, Receiver<ServiceEntry>) {
-  let (tx, rx) = async_channel::bounded(size);
-  (Producer(tx), rx)
+pin_project_lite::pin_project! {
+  /// A stream of service entries returned from a lookup.
+  pub struct Lookup {
+    shutdown_tx: Sender<()>,
+    has_err: bool,
+    #[pin]
+    entry_rx: Receiver<ServiceEntry>,
+    #[pin]
+    err_rx: Receiver<io::Error>,
+  }
+}
+
+impl Lookup {
+  /// Returns a handle to cancel the lookup.
+  #[inline]
+  pub fn canceller(&self) -> Canceller {
+    Canceller(self.shutdown_tx.clone())
+  }
+}
+
+impl Stream for Lookup {
+  type Item = io::Result<<Receiver<ServiceEntry> as Stream>::Item>;
+
+  fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+    let this = self.project();
+    if !*this.has_err {
+      match this.entry_rx.poll_next(cx) {
+        Poll::Ready(ent) => Poll::Ready(ent.map(Ok)),
+        Poll::Pending => match this.err_rx.try_recv() {
+          Ok(e) => {
+            *this.has_err = true;
+            Poll::Ready(Some(Err(e)))
+          }
+          Err(e) => match e {
+            TryRecvError::Empty => Poll::Pending,
+            TryRecvError::Closed => Poll::Ready(None),
+          },
+        },
+      }
+    } else {
+      Poll::Ready(None)
+    }
+  }
 }
 
 /// Looks up a given service, in a domain, waiting at most
@@ -280,58 +345,76 @@ pub fn bounded(size: usize) -> (Producer, Receiver<ServiceEntry>) {
 /// to a channel. Sends will not block, so clients should make sure to
 /// either read or buffer. This method will attempt to stop the query
 /// on cancellation.
-pub async fn query_with<R>(params: QueryParam, producer: Producer) -> io::Result<()>
+pub async fn query_with<R>(params: QueryParam) -> io::Result<Lookup>
 where
   R: Runtime,
 {
-  // create a new client
-  let client = Client::<R>::new(
-    !params.disable_ipv4,
-    !params.disable_ipv6,
-    params.ipv4_interface,
-    params.ipv6_interface,
-  )
-  .await?;
-
   let (shutdown_tx, shutdown_rx) = async_channel::bounded::<()>(1);
+  let (err_tx, err_rx) = async_channel::bounded(1);
+  let (entry_tx, entry_rx) = match params.capacity() {
+    Some(cap) => async_channel::bounded(cap),
+    None => async_channel::unbounded(),
+  };
 
-  // let timeout = R::sleep(params.timeout.max(Duration::from_secs(1)));
-  // let shutdown_rx1 = shutdown_rx.clone();
-  // let shutdown_tx1 = shutdown_tx.clone();
-  // R::spawn_detach(async move {
-  //   futures::select! {
-  //     // TODO: context.Contxt, not using timeout here
-  //     _ = timeout.fuse() => {
-  //       if shutdown_tx1.close() {
-  //         tracing::info!("mdns: closing client");
-  //       }
-  //     }
-  //     _ = shutdown_rx1.recv().fuse() => {}
-  //   }
-  // });
+  let lookup = Lookup {
+    shutdown_tx: shutdown_tx.clone(),
+    entry_rx,
+    err_rx,
+    has_err: false,
+  };
 
-  client
-    .query_in(
-      params.service.append_fqdn(&params.domain),
-      params.want_unicast_response,
-      params.timeout,
-      producer.0,
-      shutdown_rx,
+  R::spawn_detach(async move {
+    // create a new client
+    let client = Client::<R>::new(
+      !params.disable_ipv4,
+      !params.disable_ipv6,
+      params.ipv4_interface,
+      params.ipv6_interface,
     )
-    .await
-    .inspect_err(|_| {
-      if shutdown_tx.close() {
-        tracing::info!("mdns: closing client");
+    .await;
+
+    match client {
+      Err(e) => {
+        let _ = err_tx.send(e).await;
+        err_tx.close();
       }
-    })
+      Ok(client) => {
+        match client
+          .query_in(
+            params.service.append_fqdn(&params.domain),
+            params.want_unicast_response,
+            params.timeout,
+            entry_tx,
+            shutdown_rx,
+          )
+          .await
+        {
+          Ok(_) => {
+            if shutdown_tx.close() {
+              tracing::info!("mdns client: closing");
+            }
+          }
+          Err(e) => {
+            if shutdown_tx.close() {
+              tracing::info!("mdns client: closing");
+            }
+            let _ = err_tx.send(e).await;
+            err_tx.close();
+          }
+        }
+      }
+    }
+  });
+
+  Ok(lookup)
 }
 
 /// Similar to [`query_with`], however it uses all the default parameters
-pub async fn lookup<R>(service: Name, producer: Producer) -> io::Result<()>
+pub async fn lookup<R>(service: Name) -> io::Result<Lookup>
 where
   R: Runtime,
 {
-  query_with::<R>(QueryParam::new(service), producer).await
+  query_with::<R>(QueryParam::new(service)).await
 }
 
 /// Provides a query interface that can be used to
@@ -357,9 +440,7 @@ impl<R: Runtime> Client<R> {
     shutdown_rx: Receiver<()>,
   ) -> io::Result<()> {
     // Start listening for response packets
-    // let (msg_tx, msg_rx) = async_channel::bounded::<(Message, SocketAddr)>(32);
-    let (msg_tx, mut msg_rx) = futures::channel::mpsc::channel::<(Message, SocketAddr)>(32);
-    // let (msg_tx, msg_rx) = async_channel::unbounded::<(Message, SocketAddr)>();
+    let (msg_tx, msg_rx) = async_channel::bounded::<(Message, SocketAddr)>(32);
 
     if self.use_ipv4 {
       if let Some(conn) = &self.ipv4_unicast_conn {
@@ -397,19 +478,19 @@ impl<R: Runtime> Client<R> {
     // Map the in-progress responses
     let mut inprogress: HashMap<Name, Arc<AtomicRefCell<ServiceEntryBuilder>>> = HashMap::new();
 
-    // Listen until we reach the timeout    
+    // Listen until we reach the timeout
     let finish = R::sleep(timeout);
     futures::pin_mut!(finish);
 
     loop {
       futures::select! {
-        resp = msg_rx.next().fuse() => {
+        resp = msg_rx.recv().fuse() => {
           match resp {
-            None => {
-              tracing::error!("mdns client: failed to receive packet");
+            Err(e) => {
+              tracing::error!(err=%e, "mdns client: failed to receive packet");
             },
-            Some((msg, src_addr)) => {
-              println!("recv message: {:?}", msg);
+            Ok((msg, src_addr)) => {
+              tracing::info!("recv message: {:?}", msg);
               let records = msg.into_iter();
               let mut inp = None;
               for record in records {
@@ -500,7 +581,7 @@ impl<R: Runtime> Client<R> {
                       // Fire off a node specific query
                       let question = Query::new(ref_mut.name.clone(), false);
                       self.send_query(question).await.inspect_err(|e| {
-                        tracing::error!(err=%e, "mdns: failed to query instance {}", ref_mut.name);
+                        tracing::error!(err=%e, "mdns client: failed to query instance {}", ref_mut.name);
                       })?;
                     }
 
@@ -508,10 +589,12 @@ impl<R: Runtime> Client<R> {
                   }
                 }
               }
+
+              tracing::info!("finish processing message");
             },
           }
         },
-        // _ = (&mut finish).fuse() => return Ok(()),
+        _ = (&mut finish).fuse() => return Ok(()),
       }
     }
   }
@@ -554,7 +637,7 @@ impl<R: Runtime> Client<R> {
       .await
       {
         Err(e) => {
-          tracing::error!(err=%e, "mdns: failed to bind to udp4 port");
+          tracing::error!(err=%e, "mdns client: failed to bind to udp4 port");
           None
         }
         Ok(conn) => Some(conn),
@@ -566,7 +649,7 @@ impl<R: Runtime> Client<R> {
     let mut uconn6 = if v6 {
       match <<R::Net as Net>::UdpSocket as UdpSocket>::bind((Ipv6Addr::UNSPECIFIED, 0)).await {
         Err(e) => {
-          tracing::error!(err=%e, "mdns: failed to bind to udp6 port");
+          tracing::error!(err=%e, "mdns client: failed to bind to udp6 port");
           None
         }
         Ok(conn) => Some(conn),
@@ -584,12 +667,12 @@ impl<R: Runtime> Client<R> {
       .await
       {
         Err(e) => {
-          tracing::error!(err=%e, "mdns: failed to bind to udp4 port");
+          tracing::error!(err=%e, "mdns client: failed to bind to udp4 port");
           None
         }
         Ok(conn) => match conn.join_multicast_v4(IPV4_MDNS, ipv4_interface) {
           Err(e) => {
-            tracing::error!(err=%e, "mdns: failed to join udp4 multicast group");
+            tracing::error!(err=%e, "mdns client: failed to join udp4 multicast group");
             None
           }
           Ok(_) => Some(conn),
@@ -602,12 +685,12 @@ impl<R: Runtime> Client<R> {
     let mut mconn6 = if v6 {
       match <<R::Net as Net>::UdpSocket as UdpSocket>::bind((Ipv6Addr::UNSPECIFIED, 0)).await {
         Err(e) => {
-          tracing::error!(err=%e, "mdns: failed to bind to udp6 port");
+          tracing::error!(err=%e, "mdns client: failed to bind to udp6 port");
           None
         }
         Ok(conn) => match conn.join_multicast_v6(&IPV6_MDNS, ipv6_interface) {
           Err(e) => {
-            tracing::error!(err=%e, "mdns: failed to join udp6 multicast group");
+            tracing::error!(err=%e, "mdns client: failed to join udp6 multicast group");
             None
           }
           Ok(_) => Some(conn),
@@ -620,14 +703,18 @@ impl<R: Runtime> Client<R> {
     // Check that unicast and multicast connections have been made for IPv4 and IPv6
     // and disable the respective protocol if not.
     if uconn4.is_none() || mconn4.is_none() {
-      tracing::info!("mdns: failed to listen to both unicast and multicast on IPv4");
+      if v4 {
+        tracing::info!("mdns client: failed to listen to both unicast and multicast on IPv4");
+      }
       v4 = false;
       uconn4 = None;
       mconn4 = None;
     }
 
     if uconn6.is_none() || mconn6.is_none() {
-      tracing::info!("mdns: failed to listen to both unicast and multicast on IPv6");
+      if v6 {
+        tracing::info!("mdns client: failed to listen to both unicast and multicast on IPv6");
+      }
       v6 = false;
       uconn6 = None;
       mconn6 = None;
@@ -653,8 +740,7 @@ impl<R: Runtime> Client<R> {
 
 struct PacketReceiver<R: Runtime> {
   conn: Arc<<R::Net as Net>::UdpSocket>,
-  // tx: Sender<(Message, SocketAddr)>,
-  tx: futures::channel::mpsc::Sender<(Message, SocketAddr)>,
+  tx: Sender<(Message, SocketAddr)>,
   shutdown_rx: Receiver<()>,
 }
 
@@ -662,8 +748,7 @@ impl<R: Runtime> PacketReceiver<R> {
   #[inline]
   const fn new(
     conn: Arc<<R::Net as Net>::UdpSocket>,
-    // tx: Sender<(Message, SocketAddr)>,
-    tx: futures::channel::mpsc::Sender<(Message, SocketAddr)>,
+    tx: Sender<(Message, SocketAddr)>,
     shutdown_rx: Receiver<()>,
   ) -> Self {
     Self {
@@ -673,7 +758,7 @@ impl<R: Runtime> PacketReceiver<R> {
     }
   }
 
-  async fn run(mut self) {
+  async fn run(self) {
     let mut buf = vec![0; MAX_PAYLOAD_SIZE];
     loop {
       futures::select! {

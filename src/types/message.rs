@@ -35,7 +35,6 @@ impl Message {
 
   #[inline]
   pub(crate) fn decode(src: &[u8]) -> Result<Self, ProtoError> {
-    // panic!("decode header");
     let buflen = src.len();
     if buflen < MESSAGE_HEADER_SIZE {
       return Err(ProtoError::NotEnoughData);

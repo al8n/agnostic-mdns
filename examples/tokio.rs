@@ -1,12 +1,13 @@
 use std::time::Duration;
 
 use agnostic_mdns::{
-  client::{bounded, lookup, query_with, QueryParam},
+  client::{query_with, QueryParam},
   hostname,
   server::{Server, ServerOptions},
   tokio::TokioRuntime,
-  Name, RuntimeLite, ServiceBuilder, SmolStr,
+  Name, ServiceBuilder, SmolStr,
 };
+use futures::StreamExt;
 
 #[tokio::main]
 async fn main() {
@@ -25,21 +26,16 @@ async fn main() {
     .await
     .unwrap();
 
-  // Make a channel for results and start listening
-  let (producer, consumer) = bounded(4);
-
-  let handle = TokioRuntime::spawn(async move {
-    while let Ok(ent) = consumer.recv().await {
-      println!("Got new entry: {:?}", ent);
-    }
-  });
-
   let params = QueryParam::new(Name::from("_foobar._tcp"))
     .with_timeout(Duration::from_millis(50))
     .with_disable_ipv6(true);
 
-  query_with::<TokioRuntime>(params, producer).await.unwrap();
+  let lookup = query_with::<TokioRuntime>(params).await.unwrap();
 
-  handle.await.unwrap();
+  futures::pin_mut!(lookup);
+  while let Some(ent) = lookup.next().await {
+    println!("Found: {ent:?}");
+  }
+
   srv.shutdown().await;
 }

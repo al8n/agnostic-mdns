@@ -118,10 +118,10 @@ impl<Z: Zone> Server<Z> {
           zone.clone(),
           opts.log_empty_responses,
           shutdown_rx.clone(),
-        ))
+        )?)
       }
       Err(e) => {
-        tracing::error!(err=%e, "mdns: failed to bind to IPv4");
+        tracing::error!(err=%e, "mdns server: failed to bind to IPv4");
         None
       }
     };
@@ -134,10 +134,10 @@ impl<Z: Zone> Server<Z> {
           zone.clone(),
           opts.log_empty_responses,
           shutdown_rx.clone(),
-        ))
+        )?)
       }
       Err(e) => {
-        tracing::error!(err=%e, "mdns: failed to bind to IPv6");
+        tracing::error!(err=%e, "mdns server: failed to bind to IPv6");
         None
       }
     };
@@ -198,6 +198,7 @@ impl<Z: Zone> Server<Z> {
 struct Processor<R: Runtime, Z: Zone> {
   zone: Arc<Z>,
   conn: <R::Net as Net>::UdpSocket,
+  local_addr: SocketAddr,
   /// Indicates the server should print an informative message
   /// when there is an mDNS query for which the server has no response.
   log_empty_responses: bool,
@@ -210,13 +211,14 @@ impl<R: Runtime, Z: Zone> Processor<R, Z> {
     zone: Arc<Z>,
     log_empty_responses: bool,
     shutdown_rx: Receiver<()>,
-  ) -> Self {
-    Self {
+  ) -> io::Result<Self> {
+    conn.local_addr().map(|local_addr| Self {
       conn,
       zone,
+      local_addr,
       log_empty_responses,
       shutdown_rx,
-    }
+    })
   }
 
   async fn process(self) {
@@ -225,23 +227,28 @@ impl<R: Runtime, Z: Zone> Processor<R, Z> {
     loop {
       futures::select! {
         _ = self.shutdown_rx.recv().fuse() => {
-          tracing::info!("mdns: shutting down server packet processor");
+          tracing::info!("mdns server: shutting down server packet processor");
           return
         },
         res = self.conn.recv_from(&mut buf).fuse() => {
           let (len, addr) = match res {
             Ok((len, addr)) => (len, addr),
-            Err(e) => {
-              // tracing::error!(err=%e, "mdns: failed to receive data from UDP socket");
+            Err(err) => {
+              // tracing::error!(err=%err, local=%self.local_addr, "mdns server: failed to receive data from UDP socket");
               continue;
             }
           };
 
-          tracing::info!("mdns: received packet from {}", addr);
-          let msg = match Message::decode(&buf[..len]) {
+          if len == 0 {
+            continue;
+          }
+
+          let data = &buf[..len];
+          tracing::info!(from=%addr, data=?data, "mdns server: received packet");
+          let msg = match Message::decode(data) {
             Ok(msg) => msg,
             Err(e) => {
-              tracing::error!(err=%e, "mdns: failed to unpack packet");
+              tracing::error!(err=%e, "mdns server: failed to deserialize packet");
               continue;
             }
           };
@@ -259,7 +266,7 @@ impl<R: Runtime, Z: Zone> Processor<R, Z> {
       // be zero on transmission (only standard queries are currently supported
       // over multicast).  Multicast DNS messages received with an OPCODE other
       // than zero MUST be silently ignored."  Note: OpcodeQuery == 0
-      tracing::error!(opcode = %query.header.opcode, "mdns: received query with non-zero OpCode");
+      tracing::error!(opcode = %query.header.opcode, "mdns server: received query with non-zero OpCode");
       return;
     }
 
@@ -267,7 +274,7 @@ impl<R: Runtime, Z: Zone> Processor<R, Z> {
       // "In both multicast query and multicast response messages, the Response
       // Code MUST be zero on transmission.  Multicast DNS messages received with
       // non-zero Response Codes MUST be silently ignored."
-      tracing::error!(response_code = %query.header.response_code, "mdns: received query with non-zero ResponseCode");
+      tracing::error!(response_code = %query.header.response_code, "mdns server: received query with non-zero ResponseCode");
       return;
     }
 
@@ -278,7 +285,9 @@ impl<R: Runtime, Z: Zone> Processor<R, Z> {
     //    before deciding whether to respond.  If the TC bit is clear, it means
     //    that the querying host has no additional Known Answers.
     if query.header.truncated {
-      tracing::error!("mdns: support for DNS requests with high truncated bit not implemented");
+      tracing::error!(
+        "mdns server: support for DNS requests with high truncated bit not implemented"
+      );
       return;
     }
 
@@ -295,7 +304,7 @@ impl<R: Runtime, Z: Zone> Processor<R, Z> {
         }
         Err(e) => {
           // query=%query,
-          tracing::error!( err=%e, "mdns: fail to handle query");
+          tracing::error!(err=%e, "mdns server: fail to handle query");
         }
       }
     }
@@ -308,7 +317,7 @@ impl<R: Runtime, Z: Zone> Processor<R, Z> {
       }
 
       tracing::info!(
-        "mdns: no responses for query with questions: {}",
+        "mdns server: no responses for query with questions: {}",
         questions.join(", ")
       );
     }
@@ -330,14 +339,14 @@ impl<R: Runtime, Z: Zone> Processor<R, Z> {
 
     if let Some(mresp) = resp(multicast_answers, false) {
       if let Err(e) = self.send_response(mresp, from, false).await {
-        tracing::error!(err=%e, "mdns: error sending multicast response");
+        tracing::error!(err=%e, "mdns server: error sending multicast response");
         return;
       }
     }
 
     if let Some(uresp) = resp(unicast_answers, true) {
       if let Err(e) = self.send_response(uresp, from, true).await {
-        tracing::error!(err=%e, "mdns: error sending unicast response");
+        tracing::error!(err=%e, "mdns server: error sending unicast response");
       }
     }
   }
