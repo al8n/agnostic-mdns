@@ -104,7 +104,7 @@ impl core::hash::Hash for SlicableSmolStr {
 }
 
 #[derive(Debug, PartialEq, Eq, thiserror::Error)]
-pub enum ProtoError {
+pub(crate) enum ProtoError {
   /// Domain name is not fully qualified
   #[error("domain must be fully qualified")]
   NotFqdn,

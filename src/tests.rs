@@ -45,7 +45,7 @@ pub fn initialize_tests_tracing() {
   use std::sync::Once;
   static TRACE: Once = Once::new();
   TRACE.call_once(|| {
-    let filter = std::env::var("AGNOSTIC_MDNS_TESTING_LOG").unwrap_or_else(|_| "info".to_owned());
+    let filter = std::env::var("AGNOSTIC_MDNS_TESTING_LOG").unwrap_or_else(|_| "trace".to_owned());
     tracing::subscriber::set_global_default(
       tracing_subscriber::fmt::fmt()
         .without_time()
@@ -66,9 +66,8 @@ where
 {
   initialize_tests_tracing();
 
-  tokio::runtime::Builder::new_multi_thread()
+  tokio::runtime::Builder::new_current_thread()
     .enable_all()
-    .max_blocking_threads(64)
     .build()
     .unwrap()
     .block_on(f);

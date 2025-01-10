@@ -34,10 +34,18 @@ async fn server_lookup<R: Runtime>() {
   match query_with::<R>(params).await {
     Ok(lookup) => {
       futures::pin_mut!(lookup);
-      while let Some(Ok(ent)) = lookup.next().await {
-        assert_eq!(ent.name().as_str(), "hostname._foobar._tcp.local.");
-        assert_eq!(ent.port(), 80);
-        assert_eq!(ent.infos()[0].as_str(), "Local web server");
+      while let Some(res) = lookup.next().await {
+        match res {
+          Ok(ent) => {
+            tracing::info!("Found service: {:?}", ent);
+            assert_eq!(ent.name().as_str(), "hostname._foobar._tcp.local.");
+            assert_eq!(ent.port(), 80);
+            assert_eq!(ent.infos()[0].as_str(), "Local web server");
+          }
+          Err(e) => {
+            panic!("{e}");
+          }
+        }
       }
 
       serv.shutdown().await;

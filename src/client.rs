@@ -13,18 +13,18 @@ use agnostic::{
   net::{Net, UdpSocket},
   Runtime,
 };
-use async_channel::Sender;
+use async_channel::{Receiver, Sender};
 use atomic_refcell::AtomicRefCell;
 use futures::{FutureExt, Stream};
+use iprobe::{ipv4, ipv6};
 use smol_str::SmolStr;
 use triomphe::Arc;
 
 use crate::{
   types::{Message, Name, Query, RecordData},
+  utils::{multicast_udp4_socket, multicast_udp6_socket, unicast_udp4_socket, unicast_udp6_socket},
   IPV4_MDNS, IPV6_MDNS, MAX_PAYLOAD_SIZE, MDNS_PORT,
 };
-
-pub use async_channel::{Receiver, Recv, TryRecvError};
 
 /// Returned after we query for a service.
 #[derive(Debug, Clone)]
@@ -144,8 +144,8 @@ pub struct QueryParam {
   service: Name,
   domain: Name,
   timeout: Duration,
-  ipv4_interface: Ipv4Addr,
-  ipv6_interface: u32,
+  ipv4_interface: Option<Ipv4Addr>,
+  ipv6_interface: Option<u32>,
   cap: Option<usize>,
   want_unicast_response: bool, // Unicast response desired, as per 5.4 in RFC
   // Whether to disable usage of IPv4 for MDNS operations. Does not affect discovered addresses.
@@ -162,8 +162,8 @@ impl QueryParam {
       service,
       domain: Name::local(),
       timeout: Duration::from_secs(1),
-      ipv4_interface: Ipv4Addr::UNSPECIFIED,
-      ipv6_interface: 0,
+      ipv4_interface: None,
+      ipv6_interface: None,
       want_unicast_response: false,
       disable_ipv4: false,
       disable_ipv6: false,
@@ -206,23 +206,23 @@ impl QueryParam {
 
   /// Sets the IPv4 interface to use for queries.
   pub fn with_ipv4_interface(mut self, ipv4_interface: Ipv4Addr) -> Self {
-    self.ipv4_interface = ipv4_interface;
+    self.ipv4_interface = Some(ipv4_interface);
     self
   }
 
   /// Returns the IPv4 interface to use for queries.
-  pub const fn ipv4_interface(&self) -> Ipv4Addr {
-    self.ipv4_interface
+  pub const fn ipv4_interface(&self) -> Option<&Ipv4Addr> {
+    self.ipv4_interface.as_ref()
   }
 
   /// Sets the IPv6 interface to use for queries.
   pub fn with_ipv6_interface(mut self, ipv6_interface: u32) -> Self {
-    self.ipv6_interface = ipv6_interface;
+    self.ipv6_interface = Some(ipv6_interface);
     self
   }
 
   /// Returns the IPv6 interface to use for queries.
-  pub const fn ipv6_interface(&self) -> u32 {
+  pub const fn ipv6_interface(&self) -> Option<u32> {
     self.ipv6_interface
   }
 
@@ -301,9 +301,7 @@ pin_project_lite::pin_project! {
     shutdown_tx: Sender<()>,
     has_err: bool,
     #[pin]
-    entry_rx: Receiver<ServiceEntry>,
-    #[pin]
-    err_rx: Receiver<io::Error>,
+    entry_rx: Receiver<io::Result<ServiceEntry>>,
   }
 }
 
@@ -320,23 +318,19 @@ impl Stream for Lookup {
 
   fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
     let this = self.project();
-    if !*this.has_err {
-      match this.entry_rx.poll_next(cx) {
-        Poll::Ready(ent) => Poll::Ready(ent.map(Ok)),
-        Poll::Pending => match this.err_rx.try_recv() {
-          Ok(e) => {
-            *this.has_err = true;
-            Poll::Ready(Some(Err(e)))
-          }
-          Err(e) => match e {
-            TryRecvError::Empty => Poll::Pending,
-            TryRecvError::Closed => Poll::Ready(None),
-          },
-        },
-      }
-    } else {
-      Poll::Ready(None)
+
+    if *this.has_err {
+      return Poll::Ready(None);
     }
+
+    this.entry_rx.poll_next(cx).map(|res| match res {
+      Some(Ok(entry)) => Some(Ok(entry)),
+      Some(Err(e)) => {
+        *this.has_err = true;
+        Some(Err(e))
+      }
+      None => None,
+    })
   }
 }
 
@@ -350,7 +344,6 @@ where
   R: Runtime,
 {
   let (shutdown_tx, shutdown_rx) = async_channel::bounded::<()>(1);
-  let (err_tx, err_rx) = async_channel::bounded(1);
   let (entry_tx, entry_rx) = match params.capacity() {
     Some(cap) => async_channel::bounded(cap),
     None => async_channel::unbounded(),
@@ -359,49 +352,39 @@ where
   let lookup = Lookup {
     shutdown_tx: shutdown_tx.clone(),
     entry_rx,
-    err_rx,
     has_err: false,
   };
 
-  R::spawn_detach(async move {
-    // create a new client
-    let client = Client::<R>::new(
-      !params.disable_ipv4,
-      !params.disable_ipv6,
-      params.ipv4_interface,
-      params.ipv6_interface,
-    )
-    .await;
+  // create a new client
+  let client = Client::<R>::new(
+    !params.disable_ipv4 && ipv4(),
+    !params.disable_ipv6 && ipv6(),
+    params.ipv4_interface,
+    params.ipv6_interface,
+  )
+  .await?;
 
-    match client {
-      Err(e) => {
-        let _ = err_tx.send(e).await;
-        err_tx.close();
-      }
-      Ok(client) => {
-        match client
-          .query_in(
-            params.service.append_fqdn(&params.domain),
-            params.want_unicast_response,
-            params.timeout,
-            entry_tx,
-            shutdown_rx,
-          )
-          .await
-        {
-          Ok(_) => {
-            if shutdown_tx.close() {
-              tracing::info!("mdns client: closing");
-            }
-          }
-          Err(e) => {
-            if shutdown_tx.close() {
-              tracing::info!("mdns client: closing");
-            }
-            let _ = err_tx.send(e).await;
-            err_tx.close();
-          }
+  R::spawn_detach(async move {
+    match client
+      .query_in(
+        params.service.append_fqdn(&params.domain),
+        params.want_unicast_response,
+        params.timeout,
+        entry_tx.clone(),
+        shutdown_rx,
+      )
+      .await
+    {
+      Ok(_) => {
+        if shutdown_tx.close() {
+          tracing::info!("mdns client: closing");
         }
+      }
+      Err(e) => {
+        if shutdown_tx.close() {
+          tracing::error!(err=%e, "mdns client: closing");
+        }
+        let _ = entry_tx.send(Err(e)).await;
       }
     }
   });
@@ -423,11 +406,11 @@ struct Client<R: Runtime> {
   use_ipv4: bool,
   use_ipv6: bool,
 
-  ipv4_unicast_conn: Option<Arc<<R::Net as Net>::UdpSocket>>,
-  ipv6_unicast_conn: Option<Arc<<R::Net as Net>::UdpSocket>>,
+  ipv4_unicast_conn: Option<(SocketAddr, Arc<<R::Net as Net>::UdpSocket>)>,
+  ipv6_unicast_conn: Option<(SocketAddr, Arc<<R::Net as Net>::UdpSocket>)>,
 
-  ipv4_multicast_conn: Option<Arc<<R::Net as Net>::UdpSocket>>,
-  ipv6_multicast_conn: Option<Arc<<R::Net as Net>::UdpSocket>>,
+  ipv4_multicast_conn: Option<(SocketAddr, Arc<<R::Net as Net>::UdpSocket>)>,
+  ipv6_multicast_conn: Option<(SocketAddr, Arc<<R::Net as Net>::UdpSocket>)>,
 }
 
 impl<R: Runtime> Client<R> {
@@ -436,36 +419,68 @@ impl<R: Runtime> Client<R> {
     service: Name,
     want_unicast_response: bool,
     timeout: Duration,
-    tx: Sender<ServiceEntry>,
+    tx: Sender<io::Result<ServiceEntry>>,
     shutdown_rx: Receiver<()>,
   ) -> io::Result<()> {
     // Start listening for response packets
     let (msg_tx, msg_rx) = async_channel::bounded::<(Message, SocketAddr)>(32);
 
     if self.use_ipv4 {
-      if let Some(conn) = &self.ipv4_unicast_conn {
+      if let Some((addr, conn)) = &self.ipv4_unicast_conn {
+        tracing::info!(local_addr=%addr,"mdns client: starting to listen to unicast on IPv4");
         R::spawn_detach(
-          PacketReceiver::<R>::new(conn.clone(), msg_tx.clone(), shutdown_rx.clone()).run(),
+          PacketReceiver::<R>::new(
+            *addr,
+            false,
+            conn.clone(),
+            msg_tx.clone(),
+            shutdown_rx.clone(),
+          )
+          .run(),
         );
       }
 
-      if let Some(conn) = &self.ipv4_multicast_conn {
+      if let Some((addr, conn)) = &self.ipv4_multicast_conn {
+        tracing::info!(local_addr=%addr,"mdns client: starting to listen to multicast on IPv4");
         R::spawn_detach(
-          PacketReceiver::<R>::new(conn.clone(), msg_tx.clone(), shutdown_rx.clone()).run(),
+          PacketReceiver::<R>::new(
+            *addr,
+            false,
+            conn.clone(),
+            msg_tx.clone(),
+            shutdown_rx.clone(),
+          )
+          .run(),
         );
       }
     }
 
     if self.use_ipv6 {
-      if let Some(conn) = &self.ipv6_unicast_conn {
+      if let Some((addr, conn)) = &self.ipv6_unicast_conn {
+        tracing::info!(local_addr=%addr,"mdns client: starting to listen to unicast on IPv6");
         R::spawn_detach(
-          PacketReceiver::<R>::new(conn.clone(), msg_tx.clone(), shutdown_rx.clone()).run(),
+          PacketReceiver::<R>::new(
+            *addr,
+            true,
+            conn.clone(),
+            msg_tx.clone(),
+            shutdown_rx.clone(),
+          )
+          .run(),
         );
       }
 
-      if let Some(conn) = &self.ipv6_multicast_conn {
+      if let Some((addr, conn)) = &self.ipv6_multicast_conn {
+        tracing::info!(local_addr=%addr,"mdns client: starting to listen to multicast on IPv6");
         R::spawn_detach(
-          PacketReceiver::<R>::new(conn.clone(), msg_tx.clone(), shutdown_rx.clone()).run(),
+          PacketReceiver::<R>::new(
+            *addr,
+            true,
+            conn.clone(),
+            msg_tx.clone(),
+            shutdown_rx.clone(),
+          )
+          .run(),
         );
       }
     }
@@ -490,7 +505,6 @@ impl<R: Runtime> Client<R> {
               tracing::error!(err=%e, "mdns client: failed to receive packet");
             },
             Ok((msg, src_addr)) => {
-              tracing::info!("recv message: {:?}", msg);
               let records = msg.into_iter();
               let mut inp = None;
               for record in records {
@@ -574,7 +588,7 @@ impl<R: Runtime> Client<R> {
                       let entry = ref_mut.finalize();
 
                       futures::select! {
-                        _ = tx.send(entry).fuse() => {},
+                        _ = tx.send(Ok(entry)).fuse() => {},
                         default => {},
                       }
                     } else {
@@ -589,8 +603,6 @@ impl<R: Runtime> Client<R> {
                   }
                 }
               }
-
-              tracing::info!("finish processing message");
             },
           }
         },
@@ -604,11 +616,13 @@ impl<R: Runtime> Client<R> {
       .encode()
       .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
 
-    if let Some(conn) = &self.ipv4_multicast_conn {
+    if let Some((addr, conn)) = &self.ipv4_unicast_conn {
+      tracing::trace!(from=%addr, data=?buf.as_slice(), "mdns client: sending query by unicast on IPv4");
       conn.send_to(&buf, (IPV4_MDNS, MDNS_PORT)).await?;
     }
 
-    if let Some(conn) = &self.ipv6_multicast_conn {
+    if let Some((addr, conn)) = &self.ipv6_unicast_conn {
+      tracing::trace!(from=%addr, data=?buf.as_slice(), "mdns client: sending query by unicast on IPv6");
       conn.send_to(&buf, (IPV6_MDNS, MDNS_PORT)).await?;
     }
 
@@ -618,8 +632,8 @@ impl<R: Runtime> Client<R> {
   async fn new(
     mut v4: bool,
     mut v6: bool,
-    ipv4_interface: Ipv4Addr,
-    ipv6_interface: u32,
+    ipv4_interface: Option<Ipv4Addr>,
+    ipv6_interface: Option<u32>,
   ) -> io::Result<Self> {
     if !v4 && !v6 {
       return Err(io::Error::new(
@@ -630,29 +644,30 @@ impl<R: Runtime> Client<R> {
 
     // Establish unicast connections
     let mut uconn4 = if v4 {
-      match <<R::Net as Net>::UdpSocket as UdpSocket>::bind(SocketAddrV4::new(
-        Ipv4Addr::UNSPECIFIED,
-        0,
-      ))
-      .await
-      {
+      match unicast_udp4_socket::<R>(ipv4_interface) {
         Err(e) => {
           tracing::error!(err=%e, "mdns client: failed to bind to udp4 port");
           None
         }
-        Ok(conn) => Some(conn),
+        Ok(conn) => {
+          let addr = conn.local_addr()?;
+          Some((addr, Arc::new(conn)))
+        }
       }
     } else {
       None
     };
 
     let mut uconn6 = if v6 {
-      match <<R::Net as Net>::UdpSocket as UdpSocket>::bind((Ipv6Addr::UNSPECIFIED, 0)).await {
+      match unicast_udp6_socket::<R>(ipv6_interface) {
         Err(e) => {
           tracing::error!(err=%e, "mdns client: failed to bind to udp6 port");
           None
         }
-        Ok(conn) => Some(conn),
+        Ok(conn) => {
+          let addr = conn.local_addr()?;
+          Some((addr, Arc::new(conn)))
+        }
       }
     } else {
       None
@@ -660,41 +675,30 @@ impl<R: Runtime> Client<R> {
 
     // Establish multicast connections
     let mut mconn4 = if v4 {
-      match <<R::Net as Net>::UdpSocket as UdpSocket>::bind(SocketAddrV4::new(
-        Ipv4Addr::UNSPECIFIED,
-        0,
-      ))
-      .await
-      {
+      match multicast_udp4_socket::<R>(ipv4_interface, MDNS_PORT) {
         Err(e) => {
           tracing::error!(err=%e, "mdns client: failed to bind to udp4 port");
           None
         }
-        Ok(conn) => match conn.join_multicast_v4(IPV4_MDNS, ipv4_interface) {
-          Err(e) => {
-            tracing::error!(err=%e, "mdns client: failed to join udp4 multicast group");
-            None
-          }
-          Ok(_) => Some(conn),
-        },
+        Ok(conn) => {
+          let addr = conn.local_addr()?;
+          Some((addr, Arc::new(conn)))
+        }
       }
     } else {
       None
     };
 
     let mut mconn6 = if v6 {
-      match <<R::Net as Net>::UdpSocket as UdpSocket>::bind((Ipv6Addr::UNSPECIFIED, 0)).await {
+      match multicast_udp6_socket::<R>(ipv6_interface, MDNS_PORT) {
         Err(e) => {
           tracing::error!(err=%e, "mdns client: failed to bind to udp6 port");
           None
         }
-        Ok(conn) => match conn.join_multicast_v6(&IPV6_MDNS, ipv6_interface) {
-          Err(e) => {
-            tracing::error!(err=%e, "mdns client: failed to join udp6 multicast group");
-            None
-          }
-          Ok(_) => Some(conn),
-        },
+        Ok(conn) => {
+          let addr = conn.local_addr()?;
+          Some((addr, Arc::new(conn)))
+        }
       }
     } else {
       None
@@ -730,10 +734,10 @@ impl<R: Runtime> Client<R> {
     Ok(Self {
       use_ipv4: v4,
       use_ipv6: v6,
-      ipv4_unicast_conn: uconn4.map(Arc::new),
-      ipv6_unicast_conn: uconn6.map(Arc::new),
-      ipv4_multicast_conn: mconn4.map(Arc::new),
-      ipv6_multicast_conn: mconn6.map(Arc::new),
+      ipv4_unicast_conn: uconn4,
+      ipv6_unicast_conn: uconn6,
+      ipv4_multicast_conn: mconn4,
+      ipv6_multicast_conn: mconn6,
     })
   }
 }
@@ -742,11 +746,15 @@ struct PacketReceiver<R: Runtime> {
   conn: Arc<<R::Net as Net>::UdpSocket>,
   tx: Sender<(Message, SocketAddr)>,
   shutdown_rx: Receiver<()>,
+  local_addr: SocketAddr,
+  multicast: bool,
 }
 
 impl<R: Runtime> PacketReceiver<R> {
   #[inline]
   const fn new(
+    local_addr: SocketAddr,
+    multicast: bool,
     conn: Arc<<R::Net as Net>::UdpSocket>,
     tx: Sender<(Message, SocketAddr)>,
     shutdown_rx: Receiver<()>,
@@ -755,6 +763,8 @@ impl<R: Runtime> PacketReceiver<R> {
       conn,
       tx,
       shutdown_rx,
+      local_addr,
+      multicast,
     }
   }
 
@@ -769,12 +779,12 @@ impl<R: Runtime> PacketReceiver<R> {
           match res {
             Ok((size, src)) => {
               let data = &buf[..size];
-              tracing::info!(from=%src, data=?data, "mdns client: received packet from {}", src);
+              tracing::trace!(local_addr=%self.local_addr, from=%src, multicast=%self.multicast, data=?data, "mdns client: received packet");
 
               let msg = match Message::decode(data) {
                 Ok(msg) => msg,
                 Err(e) => {
-                  tracing::error!(err=%e, "mdns client: failed to deserialize packet");
+                  tracing::error!(local_addr=%self.local_addr, from=%src, multicast=%self.multicast, err=%e, "mdns client: failed to deserialize packet");
                   continue;
                 }
               };

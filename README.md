@@ -48,12 +48,9 @@ Simple mDNS client/server library in Rust. mDNS or Multicast DNS can be used to 
   agnostic-mdns = { version = "0.1", features = ["smol"] }
   ```
 
-## Example
+## Examples
 
-```rust
-use agnostic_mdns::;
-
-```
+Please see [examples](./examples/).
 
 ## Pedigree
 

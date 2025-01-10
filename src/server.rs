@@ -9,13 +9,14 @@ use async_channel::{Receiver, Sender};
 use atomic_refcell::AtomicRefCell;
 use either::Either;
 use futures::{stream::FuturesUnordered, FutureExt, StreamExt as _};
+use iprobe::{ipv4, ipv6};
 use smallvec_wrapper::{MediumVec, OneOrMore};
 use triomphe::Arc;
 
 use super::{
   types::{Answer, Message, ProtoError, Query, Record, OP_CODE_QUERY, RESPONSE_CODE_NO_ERROR},
   utils::{multicast_udp4_socket, multicast_udp6_socket},
-  Zone, IPV4_MDNS, IPV6_MDNS, MAX_PAYLOAD_SIZE, MDNS_PORT,
+  Zone, MAX_PAYLOAD_SIZE, MDNS_PORT,
 };
 
 const FORCE_UNICAST_RESPONSES: bool = false;
@@ -23,8 +24,8 @@ const FORCE_UNICAST_RESPONSES: bool = false;
 /// The options for [`Server`].
 #[derive(Clone, Debug)]
 pub struct ServerOptions {
-  ipv4_interface: Ipv4Addr,
-  ipv6_interface: u32,
+  ipv4_interface: Option<Ipv4Addr>,
+  ipv6_interface: Option<u32>,
   log_empty_responses: bool,
 }
 
@@ -40,35 +41,35 @@ impl ServerOptions {
   #[inline]
   pub const fn new() -> Self {
     Self {
-      ipv4_interface: Ipv4Addr::UNSPECIFIED,
-      ipv6_interface: 0,
+      ipv4_interface: None,
+      ipv6_interface: None,
       log_empty_responses: false,
     }
   }
 
   /// Returns the Ipv4 interface to bind the multicast listener to.
   #[inline]
-  pub const fn ipv4_interface(&self) -> &Ipv4Addr {
-    &self.ipv4_interface
+  pub const fn ipv4_interface(&self) -> Option<&Ipv4Addr> {
+    self.ipv4_interface.as_ref()
   }
 
   /// Sets the IPv4 interface to bind the multicast listener to.
   #[inline]
   pub fn with_ipv4_interface(mut self, iface: Ipv4Addr) -> Self {
-    self.ipv4_interface = iface;
+    self.ipv4_interface = Some(iface);
     self
   }
 
   /// Returns the Ipv6 interface to bind the multicast listener to.
   #[inline]
-  pub const fn ipv6_interface(&self) -> u32 {
+  pub const fn ipv6_interface(&self) -> Option<u32> {
     self.ipv6_interface
   }
 
   /// Sets the IPv6 interface to bind the multicast listener to.
   #[inline]
   pub fn with_ipv6_interface(mut self, index: u32) -> Self {
-    self.ipv6_interface = index;
+    self.ipv6_interface = Some(index);
     self
   }
 
@@ -110,36 +111,38 @@ impl<Z: Zone> Server<Z> {
     let zone = Arc::new(zone);
     let handles = FuturesUnordered::new();
 
-    let v4 = match multicast_udp4_socket::<Z::Runtime>(MDNS_PORT) {
-      Ok(conn) => {
-        conn.join_multicast_v4(IPV4_MDNS, opts.ipv4_interface)?;
-        Some(Processor::<Z::Runtime, Z>::new(
+    let v4 = if ipv4() {
+      match multicast_udp4_socket::<Z::Runtime>(opts.ipv4_interface, MDNS_PORT) {
+        Ok(conn) => Some(Processor::<Z::Runtime, Z>::new(
           conn,
           zone.clone(),
           opts.log_empty_responses,
           shutdown_rx.clone(),
-        )?)
+        )?),
+        Err(e) => {
+          tracing::error!(err=%e, "mdns server: failed to bind to IPv4");
+          None
+        }
       }
-      Err(e) => {
-        tracing::error!(err=%e, "mdns server: failed to bind to IPv4");
-        None
-      }
+    } else {
+      None
     };
 
-    let v6 = match multicast_udp6_socket::<Z::Runtime>(MDNS_PORT) {
-      Ok(conn) => {
-        conn.join_multicast_v6(&IPV6_MDNS, opts.ipv6_interface)?;
-        Some(Processor::<Z::Runtime, Z>::new(
+    let v6 = if ipv6() {
+      match multicast_udp6_socket::<Z::Runtime>(opts.ipv6_interface, MDNS_PORT) {
+        Ok(conn) => Some(Processor::<Z::Runtime, Z>::new(
           conn,
           zone.clone(),
           opts.log_empty_responses,
           shutdown_rx.clone(),
-        )?)
+        )?),
+        Err(e) => {
+          tracing::error!(err=%e, "mdns server: failed to bind to IPv6");
+          None
+        }
       }
-      Err(e) => {
-        tracing::error!(err=%e, "mdns server: failed to bind to IPv6");
-        None
-      }
+    } else {
+      None
     };
 
     match (v4, v6) {
@@ -198,6 +201,7 @@ impl<Z: Zone> Server<Z> {
 struct Processor<R: Runtime, Z: Zone> {
   zone: Arc<Z>,
   conn: <R::Net as Net>::UdpSocket,
+  #[allow(dead_code)]
   local_addr: SocketAddr,
   /// Indicates the server should print an informative message
   /// when there is an mDNS query for which the server has no response.
@@ -233,8 +237,10 @@ impl<R: Runtime, Z: Zone> Processor<R, Z> {
         res = self.conn.recv_from(&mut buf).fuse() => {
           let (len, addr) = match res {
             Ok((len, addr)) => (len, addr),
-            Err(err) => {
-              // tracing::error!(err=%err, local=%self.local_addr, "mdns server: failed to receive data from UDP socket");
+            Err(_err) => {
+              #[cfg(any(target_os = "linux", windows))]
+              tracing::error!(err=%_err, local=%self.local_addr, "mdns server: failed to receive data from UDP socket");
+              R::yield_now().await;
               continue;
             }
           };
@@ -244,15 +250,14 @@ impl<R: Runtime, Z: Zone> Processor<R, Z> {
           }
 
           let data = &buf[..len];
-          tracing::info!(from=%addr, data=?data, "mdns server: received packet");
+          tracing::trace!(from=%addr, data=?data, "mdns server: received packet");
           let msg = match Message::decode(data) {
             Ok(msg) => msg,
             Err(e) => {
-              tracing::error!(err=%e, "mdns server: failed to deserialize packet");
+              tracing::error!(from=%addr, err=%e, "mdns server: failed to deserialize packet");
               continue;
             }
           };
-
           self.handle_query(addr, msg).await;
           buf.clear();
         }
@@ -274,7 +279,7 @@ impl<R: Runtime, Z: Zone> Processor<R, Z> {
       // "In both multicast query and multicast response messages, the Response
       // Code MUST be zero on transmission.  Multicast DNS messages received with
       // non-zero Response Codes MUST be silently ignored."
-      tracing::error!(response_code = %query.header.response_code, "mdns server: received query with non-zero ResponseCode");
+      tracing::error!(rcode = %query.header.response_code, "mdns server: received query with non-zero response_code");
       return;
     }
 

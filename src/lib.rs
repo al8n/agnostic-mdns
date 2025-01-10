@@ -28,8 +28,10 @@ pub mod server;
 
 mod types;
 use smol_str::format_smolstr;
+
+pub use iprobe as netprobe;
 pub use smol_str::SmolStr;
-pub use types::{DNSClass, Name, RecordData, RecordHeader, UnknownRecordTypeStr};
+pub use types::*;
 
 /// Types for `tokio` runtime
 #[cfg(feature = "tokio")]

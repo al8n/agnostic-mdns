@@ -5,31 +5,94 @@ use std::{
   net::{Ipv4Addr, Ipv6Addr, SocketAddr, UdpSocket as StdUdpSocket},
 };
 
+use crate::{IPV4_MDNS, IPV6_MDNS};
+
+pub(crate) fn unicast_udp4_socket<R: Runtime>(
+  ifi: Option<Ipv4Addr>,
+) -> io::Result<<R::Net as Net>::UdpSocket> {
+  let sock = Socket::new(Domain::IPV4, Type::DGRAM, Some(Protocol::UDP))?;
+  let addr: SocketAddr = (Ipv4Addr::UNSPECIFIED, 0).into();
+  sock.bind(&addr.into())?;
+
+  if let Some(ifi) = ifi {
+    sock.set_multicast_if_v4(&ifi)?;
+  }
+  sock.set_nonblocking(true)?;
+
+  let sock = StdUdpSocket::from(sock);
+  <<R::Net as Net>::UdpSocket as TryFrom<_>>::try_from(sock)
+}
+
+pub(crate) fn unicast_udp6_socket<R: Runtime>(
+  ifi: Option<u32>,
+) -> io::Result<<R::Net as Net>::UdpSocket> {
+  let sock = Socket::new(Domain::IPV6, Type::DGRAM, Some(Protocol::UDP))?;
+  sock.set_only_v6(true)?;
+  let addr: SocketAddr = (Ipv6Addr::UNSPECIFIED, 0).into();
+  sock.bind(&addr.into())?;
+
+  if let Some(ifi) = ifi {
+    sock.set_multicast_if_v6(ifi)?;
+  }
+
+  sock.set_nonblocking(true)?;
+  let sock = StdUdpSocket::from(sock);
+  <<R::Net as Net>::UdpSocket as TryFrom<_>>::try_from(sock)
+}
+
 pub(crate) fn multicast_udp4_socket<R: Runtime>(
+  ifi: Option<Ipv4Addr>,
   port: u16,
 ) -> io::Result<<R::Net as Net>::UdpSocket> {
   let sock = Socket::new(Domain::IPV4, Type::DGRAM, Some(Protocol::UDP))?;
   sock.set_reuse_address(true)?;
   sock.set_reuse_port(true)?;
-  // sock.set_nonblocking(true)?;
   let addr: SocketAddr = (Ipv4Addr::UNSPECIFIED, port).into();
-  sock.bind(&addr.into()).and_then(|_| {
-    let sock = StdUdpSocket::from(sock);
-    <<R::Net as Net>::UdpSocket as TryFrom<_>>::try_from(sock)
-  })
+  sock.bind(&addr.into())?;
+
+  if let Some(ifi) = ifi {
+    sock.set_multicast_if_v4(&ifi)?;
+  }
+  sock.set_multicast_loop_v4(true)?;
+
+  sock.set_nonblocking(true)?;
+
+  if let Some(ifi) = ifi {
+    sock.join_multicast_v4(&IPV4_MDNS, &ifi)?;
+  } else {
+    sock.join_multicast_v4(&IPV4_MDNS, &Ipv4Addr::UNSPECIFIED)?;
+  }
+
+  let sock = StdUdpSocket::from(sock);
+  <<R::Net as Net>::UdpSocket as TryFrom<_>>::try_from(sock)
 }
 
 pub(crate) fn multicast_udp6_socket<R: Runtime>(
+  ifi: Option<u32>,
   port: u16,
 ) -> io::Result<<R::Net as Net>::UdpSocket> {
   let sock = Socket::new(Domain::IPV6, Type::DGRAM, Some(Protocol::UDP))?;
   sock.set_reuse_address(true)?;
   sock.set_reuse_port(true)?;
-  // sock.set_nonblocking(true)?;
   sock.set_only_v6(true)?;
   let addr: SocketAddr = (Ipv6Addr::UNSPECIFIED, port).into();
-  sock.bind(&addr.into()).and_then(|_| {
-    let sock = StdUdpSocket::from(sock);
-    <<R::Net as Net>::UdpSocket as TryFrom<_>>::try_from(sock)
-  })
+  sock.bind(&addr.into())?;
+
+  sock.set_multicast_loop_v6(true)?;
+
+  if let Some(ifi) = ifi {
+    sock.set_multicast_if_v6(ifi)?;
+  }
+  sock.set_multicast_loop_v6(true)?;
+
+  sock.set_nonblocking(true)?;
+
+  if let Some(ifi) = ifi {
+    sock.join_multicast_v6(&IPV6_MDNS, ifi)?;
+  } else {
+    sock.join_multicast_v6(&IPV6_MDNS, 0)?;
+  }
+
+  let sock = StdUdpSocket::from(sock);
+  <<R::Net as Net>::UdpSocket as TryFrom<_>>::try_from(sock)
 }
