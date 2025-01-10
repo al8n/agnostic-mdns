@@ -28,9 +28,9 @@ required-features = ["smol"]
 default = ["std"]
 std = []
 
-tokio = ["agnostic/tokio"]
-async-std = ["agnostic/async-std"]
-smol = ["agnostic/smol"]
+tokio = ["agnostic/tokio", "std"]
+async-std = ["agnostic/async-std", "std"]
+smol = ["agnostic/smol", "std"]
 
 [dependencies]
 agnostic = { version = "0.5", features = ["dns", "net"] }
@@ -43,7 +43,7 @@ iprobe = "0.1"
 pin-project-lite = "0.2"
 smol_str = "0.3"
 smallvec-wrapper = "0.2"
-socket2 = "0.5"
+socket2 = { version = "0.5", features = ["all"] }
 triomphe = "0.1"
 thiserror = "2"
 
