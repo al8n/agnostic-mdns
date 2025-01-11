@@ -46,6 +46,7 @@ pub(crate) fn multicast_udp4_socket<R: Runtime>(
 ) -> io::Result<<R::Net as Net>::UdpSocket> {
   let sock = Socket::new(Domain::IPV4, Type::DGRAM, Some(Protocol::UDP))?;
   sock.set_reuse_address(true)?;
+  #[cfg(not(windows))]
   sock.set_reuse_port(true)?;
   let addr: SocketAddr = (Ipv4Addr::UNSPECIFIED, port).into();
   sock.bind(&addr.into())?;
@@ -73,6 +74,7 @@ pub(crate) fn multicast_udp6_socket<R: Runtime>(
 ) -> io::Result<<R::Net as Net>::UdpSocket> {
   let sock = Socket::new(Domain::IPV6, Type::DGRAM, Some(Protocol::UDP))?;
   sock.set_reuse_address(true)?;
+  #[cfg(not(windows))]
   sock.set_reuse_port(true)?;
   sock.set_only_v6(true)?;
   let addr: SocketAddr = (Ipv6Addr::UNSPECIFIED, port).into();
