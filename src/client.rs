@@ -499,117 +499,144 @@ impl<R: Runtime> Client<R> {
     futures::pin_mut!(finish);
 
     loop {
-      futures::select! {
-        resp = msg_rx.recv().fuse() => {
-          match resp {
-            Err(e) => {
-              tracing::error!(err=%e, "mdns client: failed to receive packet");
-            },
-            Ok((msg, src_addr)) => {
-              let records = msg.into_iter();
-              let mut inp = None;
-              for record in records {
-                // TODO(reddaly): Check that response corresponds to serviceAddr?
-                let (header, data) = record.into_components();
-                match data {
-                  RecordData::PTR(data) => {
-                    // Create new entry for this
-                    let ent = ensure_name(&mut inprogress, data);
-                    inp = Some(ent);
-                  },
-                  RecordData::SRV(data) => {
-                    let name = header.name().clone();
-                    // Check for a target mismatch
-                    if data.target().ne(&name) {
-                      alias(&mut inprogress, name.clone(), data.target().clone());
-
-                      // Get the port
-                      let ent = ensure_name(&mut inprogress, name);
-                      let mut ref_mut = ent.borrow_mut();
-                      ref_mut.host = data.target().clone();
-                      ref_mut.port = data.port();
-                    } else {
-                      // Get the port
-                      let ent = ensure_name(&mut inprogress, name.clone());
-                      let mut ref_mut = ent.borrow_mut();
-                      ref_mut.port = data.port();
-                      ref_mut.host = data.into_target();
-                    }
-                  },
-                  RecordData::TXT(data) => {
-                    let name = header.name().clone();
-                    // Pull out the txt
-                    let ent = ensure_name(&mut inprogress, name);
-                    let mut ref_mut = ent.borrow_mut();
-                    ref_mut.infos = data.clone();
-                    ref_mut.has_txt = true;
-                    drop(ref_mut);
-                    inp = Some(ent);
-                  },
-                  RecordData::A(data) => {
-                    let name = header.name().clone();
-                    // Pull out the IP
-                    let ent = ensure_name(&mut inprogress, name);
-                    let mut ref_mut = ent.borrow_mut();
-                    ref_mut.ipv4 = Some(data);
-                    drop(ref_mut);
-                    inp = Some(ent);
-                  },
-                  RecordData::AAAA(data) => {
-                    let name = header.name().clone();
-                    // Pull out the IP
-                    let ent = ensure_name(&mut inprogress, name);
-                    let mut ref_mut = ent.borrow_mut();
-                    ref_mut.ipv6 = Some(data);
-                    // link-local IPv6 addresses must be qualified with a zone (interface). Zone is
-                    // specific to this machine/network-namespace and so won't be carried in the
-                    // mDNS message itself. We borrow the zone from the source address of the UDP
-                    // packet, as the link-local address should be valid on that interface.
-                    if Ipv6AddrExt::is_unicast_link_local(&data) || data.is_multicast_link_local() {
-                      if let SocketAddr::V6(addr) = src_addr {
-                        let zone = addr.scope_id();
-                        ref_mut.zone = Some(zone);
-                      }
-                    }
-                    drop(ref_mut);
-                    inp = Some(ent);
-                  },
-                }
-
-                match inp {
-                  None => continue,
-                  Some(ref ent) => {
-                    // Check if this entry is complete
-                    let mut ref_mut = ent.borrow_mut();
-                    if ref_mut.complete() {
-                      if ref_mut.sent {
-                        continue;
-                      }
-                      ref_mut.sent = true;
-                      let entry = ref_mut.finalize();
-
-                      futures::select! {
-                        _ = tx.send(Ok(entry)).fuse() => {},
-                        default => {},
-                      }
-                    } else {
-                      // Fire off a node specific query
-                      let question = Query::new(ref_mut.name.clone(), false);
-                      self.send_query(question).await.inspect_err(|e| {
-                        tracing::error!(err=%e, "mdns client: failed to query instance {}", ref_mut.name);
-                      })?;
-                    }
-
-                    drop(ref_mut);
-                  }
-                }
-              }
-            },
+      let recv_fut = async {
+        match msg_rx.recv().await {
+          Ok((msg, src_addr)) => {
+            if let Err(e) = self
+              .handle_record(&mut inprogress, msg, src_addr, &tx)
+              .await
+            {
+              return ControlFlow::Break(e);
+            }
           }
-        },
-        _ = (&mut finish).fuse() => return Ok(()),
+          Err(e) => {
+            tracing::error!(err=%e, "mdns client: failed to receive packet");
+          }
+        }
+
+        ControlFlow::Continue(())
+      };
+
+      futures::pin_mut!(recv_fut);
+      let selector = futures::future::select(finish.as_mut(), recv_fut);
+      match selector.await {
+        futures::future::Either::Left(_) => return Ok(()),
+        futures::future::Either::Right((res, _)) => {
+          if let ControlFlow::Break(e) = res {
+            return Err(e);
+          }
+        }
       }
     }
+  }
+
+  async fn handle_record(
+    &self,
+    inprogress: &mut HashMap<Name, Arc<AtomicRefCell<ServiceEntryBuilder>>>,
+    msg: Message,
+    src_addr: SocketAddr,
+    tx: &Sender<io::Result<ServiceEntry>>,
+  ) -> io::Result<()> {
+    let records = msg.into_iter();
+    let mut inp = None;
+    for record in records {
+      // TODO(reddaly): Check that response corresponds to serviceAddr?
+      let (header, data) = record.into_components();
+      match data {
+        RecordData::PTR(data) => {
+          // Create new entry for this
+          let ent = ensure_name(inprogress, data);
+          inp = Some(ent);
+        }
+        RecordData::SRV(data) => {
+          let name = header.name().clone();
+          // Check for a target mismatch
+          if data.target().ne(&name) {
+            alias(inprogress, name.clone(), data.target().clone());
+
+            // Get the port
+            let ent = ensure_name(inprogress, name);
+            let mut ref_mut = ent.borrow_mut();
+            ref_mut.host = data.target().clone();
+            ref_mut.port = data.port();
+          } else {
+            // Get the port
+            let ent = ensure_name(inprogress, name.clone());
+            let mut ref_mut = ent.borrow_mut();
+            ref_mut.port = data.port();
+            ref_mut.host = data.into_target();
+          }
+        }
+        RecordData::TXT(data) => {
+          let name = header.name().clone();
+          // Pull out the txt
+          let ent = ensure_name(inprogress, name);
+          let mut ref_mut = ent.borrow_mut();
+          ref_mut.infos = data.clone();
+          ref_mut.has_txt = true;
+          drop(ref_mut);
+          inp = Some(ent);
+        }
+        RecordData::A(data) => {
+          let name = header.name().clone();
+          // Pull out the IP
+          let ent = ensure_name(inprogress, name);
+          let mut ref_mut = ent.borrow_mut();
+          ref_mut.ipv4 = Some(data);
+          drop(ref_mut);
+          inp = Some(ent);
+        }
+        RecordData::AAAA(data) => {
+          let name = header.name().clone();
+          // Pull out the IP
+          let ent = ensure_name(inprogress, name);
+          let mut ref_mut = ent.borrow_mut();
+          ref_mut.ipv6 = Some(data);
+          // link-local IPv6 addresses must be qualified with a zone (interface). Zone is
+          // specific to this machine/network-namespace and so won't be carried in the
+          // mDNS message itself. We borrow the zone from the source address of the UDP
+          // packet, as the link-local address should be valid on that interface.
+          if Ipv6AddrExt::is_unicast_link_local(&data) || data.is_multicast_link_local() {
+            if let SocketAddr::V6(addr) = src_addr {
+              let zone = addr.scope_id();
+              ref_mut.zone = Some(zone);
+            }
+          }
+          drop(ref_mut);
+          inp = Some(ent);
+        }
+      }
+
+      match inp {
+        None => continue,
+        Some(ref ent) => {
+          // Check if this entry is complete
+          let mut ref_mut = ent.borrow_mut();
+          if ref_mut.complete() {
+            if ref_mut.sent {
+              continue;
+            }
+            ref_mut.sent = true;
+            let entry = ref_mut.finalize();
+
+            futures::select! {
+              _ = tx.send(Ok(entry)).fuse() => {},
+              default => {},
+            }
+          } else {
+            // Fire off a node specific query
+            let question = Query::new(ref_mut.name.clone(), false);
+            self.send_query(question).await.inspect_err(|e| {
+              tracing::error!(err=%e, "mdns client: failed to query instance {}", ref_mut.name);
+            })?;
+          }
+
+          drop(ref_mut);
+        }
+      }
+    }
+
+    Ok(())
   }
 
   async fn send_query(&self, question: Query) -> io::Result<()> {
