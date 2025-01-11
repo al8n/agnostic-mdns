@@ -168,7 +168,7 @@ impl ServiceBuilder {
   /// ```rust
   /// use agnostic_mdns::{Name, ServiceBuilder};
   ///
-  /// let builder = ServiceBuilder::new("hostname".into(), "_http._tcp".into());
+  /// let builder = ServiceBuilder::new("hostname".into(), "_http._tcp".into())
   ///   .with_hostname(Name::from("testhost."));
   ///
   /// assert_eq!(builder.hostname().unwrap().as_str(), "testhost.");

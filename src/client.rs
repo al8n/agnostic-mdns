@@ -180,7 +180,7 @@ impl QueryParam {
   /// use agnostic_mdns::client::QueryParam;
   ///
   /// let params = QueryParam::new("service._tcp".into())
-  ///  .with_domain("local.".parse().unwrap());
+  ///   .with_domain("local.".into());
   /// ```
   pub fn with_domain(mut self, domain: Name) -> Self {
     self.domain = domain;
@@ -195,7 +195,7 @@ impl QueryParam {
   /// use agnostic_mdns::client::QueryParam;
   ///
   /// let params = QueryParam::new("service._tcp".into())
-  /// .with_domain("local.".parse().unwrap());
+  ///   .with_domain("local.".into());
   ///
   /// assert_eq!(params.domain().as_str(), "local.");
   pub const fn domain(&self) -> &Name {
