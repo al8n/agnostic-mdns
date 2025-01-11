@@ -770,6 +770,7 @@ impl<R: Runtime> PacketReceiver<R> {
 
   async fn run(self) {
     let mut buf = vec![0; MAX_PAYLOAD_SIZE];
+
     loop {
       futures::select! {
         _ = self.shutdown_rx.recv().fuse() => {

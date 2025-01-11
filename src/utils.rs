@@ -15,7 +15,9 @@ pub(crate) fn unicast_udp4_socket<R: Runtime>(
   sock.bind(&addr.into())?;
 
   if let Some(ifi) = ifi {
-    sock.set_multicast_if_v4(&ifi)?;
+    if !ifi.is_unspecified() {
+      sock.set_multicast_if_v4(&ifi)?;
+    }
   }
   sock.set_nonblocking(true)?;
 
@@ -32,7 +34,9 @@ pub(crate) fn unicast_udp6_socket<R: Runtime>(
   sock.bind(&addr.into())?;
 
   if let Some(ifi) = ifi {
-    sock.set_multicast_if_v6(ifi)?;
+    if ifi != 0 {
+      sock.set_multicast_if_v6(ifi)?;
+    }
   }
 
   sock.set_nonblocking(true)?;
@@ -52,17 +56,13 @@ pub(crate) fn multicast_udp4_socket<R: Runtime>(
   sock.bind(&addr.into())?;
 
   if let Some(ifi) = ifi {
-    sock.set_multicast_if_v4(&ifi)?;
+    if !ifi.is_unspecified() {
+      sock.set_multicast_if_v4(&ifi)?;
+    }
   }
   sock.set_multicast_loop_v4(true)?;
-
+  sock.join_multicast_v4(&IPV4_MDNS, &ifi.unwrap_or(Ipv4Addr::UNSPECIFIED))?;
   sock.set_nonblocking(true)?;
-
-  if let Some(ifi) = ifi {
-    sock.join_multicast_v4(&IPV4_MDNS, &ifi)?;
-  } else {
-    sock.join_multicast_v4(&IPV4_MDNS, &Ipv4Addr::UNSPECIFIED)?;
-  }
 
   let sock = StdUdpSocket::from(sock);
   <<R::Net as Net>::UdpSocket as TryFrom<_>>::try_from(sock)
@@ -80,20 +80,14 @@ pub(crate) fn multicast_udp6_socket<R: Runtime>(
   let addr: SocketAddr = (Ipv6Addr::UNSPECIFIED, port).into();
   sock.bind(&addr.into())?;
 
-  sock.set_multicast_loop_v6(true)?;
-
   if let Some(ifi) = ifi {
-    sock.set_multicast_if_v6(ifi)?;
+    if ifi != 0 {
+      sock.set_multicast_if_v6(ifi)?;
+    }
   }
   sock.set_multicast_loop_v6(true)?;
-
+  sock.join_multicast_v6(&IPV6_MDNS, ifi.unwrap_or(0))?;
   sock.set_nonblocking(true)?;
-
-  if let Some(ifi) = ifi {
-    sock.join_multicast_v6(&IPV6_MDNS, ifi)?;
-  } else {
-    sock.join_multicast_v6(&IPV6_MDNS, 0)?;
-  }
 
   let sock = StdUdpSocket::from(sock);
   <<R::Net as Net>::UdpSocket as TryFrom<_>>::try_from(sock)

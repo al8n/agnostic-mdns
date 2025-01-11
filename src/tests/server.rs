@@ -27,6 +27,12 @@ async fn server_lookup<R: Runtime>() {
     .await
     .unwrap();
 
+  #[cfg(target_os = "linux")]
+  let params = QueryParam::new(Name::from("_foobar._tcp"))
+    .with_timeout(Duration::from_millis(50))
+    .with_disable_ipv6(false);
+
+  #[cfg(not(target_os = "linux"))]
   let params = QueryParam::new(Name::from("_foobar._tcp"))
     .with_timeout(Duration::from_millis(50))
     .with_disable_ipv6(true);

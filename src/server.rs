@@ -238,7 +238,7 @@ impl<R: Runtime, Z: Zone> Processor<R, Z> {
           let (len, addr) = match res {
             Ok((len, addr)) => (len, addr),
             Err(_err) => {
-              #[cfg(any(target_os = "linux", windows))]
+              #[cfg(target_os = "linux")]
               tracing::error!(err=%_err, local=%self.local_addr, "mdns server: failed to receive data from UDP socket");
               R::yield_now().await;
               continue;
