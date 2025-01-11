@@ -51,7 +51,7 @@ jobs:
             await github.rest.gists.update({
               gist_id: gistId,
               files: {
-                "template-rs": {
+                "agnostic-mdns": {
                   content: output
                 }
               }

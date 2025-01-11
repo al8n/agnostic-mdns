@@ -1,39 +1,73 @@
 [package]
-name = "template-rs"
-version = "0.0.0"
+name = "agnostic-mdns"
+version = "0.1.1"
 edition = "2021"
-repository = "https://github.com/al8n/template-rs"
-homepage = "https://github.com/al8n/template-rs"
-documentation = "https://docs.rs/template-rs"
-description = "A template for creating Rust open-source repo on GitHub"
+repository = "https://github.com/al8n/agnostic-mdns"
+homepage = "https://github.com/al8n/agnostic-mdns"
+documentation = "https://docs.rs/agnostic-mdns"
+description = "Async runtime agnostic, simple and lightweight mDNS client/server library in Rust."
 license = "MIT OR Apache-2.0"
-rust-version = "1.73"
+rust-version = "1.76"
+categories = ["network-programming"]
+keywords = ["mdns", "dns-sd", "zeroconf"]
 
-[[bench]]
-path = "benches/foo.rs"
-name = "foo"
-harness = false
+[[example]]
+name = "tokio"
+path = "examples/tokio.rs"
+required-features = ["tokio"]
+
+[[example]]
+name = "async-std"
+path = "examples/async_std.rs"
+required-features = ["async-std"]
+
+[[example]]
+name = "smol"
+path = "examples/smol.rs"
+required-features = ["smol"]
 
 [features]
 default = ["std"]
-alloc = []
 std = []
 
+tokio = ["agnostic/tokio", "std"]
+async-std = ["agnostic/async-std", "std"]
+smol = ["agnostic/smol", "std"]
+
 [dependencies]
+agnostic = { version = "0.5", features = ["dns", "net"] }
+atomic_refcell = "0.1"
+async-channel = "2"
+either = "1"
+futures = "0.3"
+iprobe = "0.1"
+pin-project-lite = "0.2"
+smol_str = "0.3"
+smallvec-wrapper = "0.2"
+socket2 = { version = "0.5", features = ["all"] }
+triomphe = "0.1"
+thiserror = "2"
+
+tracing = "0.1"
+
+[target.'cfg(unix)'.dependencies]
+rustix = { version = "0.38", features = ["system"] }
+
+[target.'cfg(windows)'.dependencies]
+hostname = "0.4"
 
 [dev-dependencies]
-criterion = "0.5"
-tempfile = "3"
+paste = "1"
+agnostic = { version = "0.5", features = ["dns", "net", "tokio", "async-std", "smol"] }
+tracing-subscriber = { version = "0.3", features = [
+  "env-filter",
+  "tracing-log",
+] }
+tokio = { version = "1", features = ["full"] }
+smol = "2"
+async-std = "1"
+scopeguard = "1"
 
-[profile.bench]
-opt-level = 3
-debug = false
-codegen-units = 1
-lto = 'thin'
-incremental = false
-debug-assertions = false
-overflow-checks = false
-rpath = false
 
 [package.metadata.docs.rs]
 all-features = true
@@ -42,6 +76,4 @@ rustdoc-args = ["--cfg", "docsrs"]
 [lints.rust]
 rust_2018_idioms = "warn"
 single_use_lifetimes = "warn"
-unexpected_cfgs = { level = "warn", check-cfg = [
-  'cfg(all_tests)',
-] }
+
