@@ -1,5 +1,5 @@
 use core::net::{Ipv4Addr, SocketAddr};
-use std::io;
+use std::{io, ops::ControlFlow};
 
 use agnostic::{
   net::{Net, UdpSocket},
@@ -229,37 +229,46 @@ impl<R: Runtime, Z: Zone> Processor<R, Z> {
     let mut buf = vec![0; MAX_PAYLOAD_SIZE];
 
     loop {
-      futures::select! {
-        _ = self.shutdown_rx.recv().fuse() => {
-          tracing::info!("mdns server: shutting down server packet processor");
-          return
-        },
-        res = self.conn.recv_from(&mut buf).fuse() => {
-          let (len, addr) = match res {
-            Ok((len, addr)) => (len, addr),
-            Err(_err) => {
-              #[cfg(target_os = "linux")]
-              tracing::error!(err=%_err, local=%self.local_addr, "mdns server: failed to receive data from UDP socket");
-              R::yield_now().await;
-              continue;
-            }
-          };
-
-          if len == 0 {
-            continue;
+      let shutdown_fut = self.shutdown_rx.recv().fuse();
+      let recv_fut = async {
+        match self.conn.recv_from(&mut buf).await {
+          Err(_err) => {
+            #[cfg(target_os = "linux")]
+            tracing::error!(err=%_err, local=%self.local_addr, "mdns server: failed to receive data from UDP socket");
+            return ControlFlow::<(), bool>::Continue(true);
           }
-
-          let data = &buf[..len];
-          tracing::trace!(from=%addr, data=?data, "mdns server: received packet");
-          let msg = match Message::decode(data) {
-            Ok(msg) => msg,
-            Err(e) => {
-              tracing::error!(from=%addr, err=%e, "mdns server: failed to deserialize packet");
-              continue;
+          Ok((len, addr)) => {
+            if len == 0 {
+              return ControlFlow::Continue(false);
             }
-          };
-          self.handle_query(addr, msg).await;
-          buf.clear();
+
+            let data = &buf[..len];
+            tracing::trace!(from=%addr, data=?data, "mdns server: received packet");
+            let msg = match Message::decode(data) {
+              Ok(msg) => msg,
+              Err(e) => {
+                tracing::error!(from=%addr, err=%e, "mdns server: failed to deserialize packet");
+                return ControlFlow::Continue(false);
+              }
+            };
+            self.handle_query(addr, msg).await;
+            buf.clear();
+            ControlFlow::Continue(false)
+          }
+        }
+      };
+      futures::pin_mut!(shutdown_fut);
+      futures::pin_mut!(recv_fut);
+
+      match futures::future::select(shutdown_fut, recv_fut).await {
+        futures::future::Either::Left(_) => {
+          tracing::info!("mdns server: shutting down server packet processor");
+          return;
+        }
+        futures::future::Either::Right((res, _)) => {
+          if let ControlFlow::Continue(true) = res {
+            R::yield_now().await;
+          }
         }
       }
     }

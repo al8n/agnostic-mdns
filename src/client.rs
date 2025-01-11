@@ -5,6 +5,7 @@ use core::{
 use std::{
   collections::{hash_map::Entry, HashMap},
   io,
+  ops::ControlFlow,
   pin::Pin,
   task::{Context, Poll},
 };
@@ -772,39 +773,56 @@ impl<R: Runtime> PacketReceiver<R> {
     let mut buf = vec![0; MAX_PAYLOAD_SIZE];
 
     loop {
-      futures::select! {
-        _ = self.shutdown_rx.recv().fuse() => {
-          return;
-        },
-        res = self.conn.recv_from(&mut buf).fuse() => {
-          match res {
-            Ok((size, src)) => {
-              let data = &buf[..size];
-              tracing::trace!(local_addr=%self.local_addr, from=%src, multicast=%self.multicast, data=?data, "mdns client: received packet");
+      let shutdown_fut = self.shutdown_rx.recv();
+      let handle = async {
+        match self.conn.recv_from(&mut buf).fuse().await {
+          Ok((size, src)) => {
+            let data = &buf[..size];
+            tracing::trace!(local_addr=%self.local_addr, from=%src, multicast=%self.multicast, data=?data, "mdns client: received packet");
 
-              let msg = match Message::decode(data) {
-                Ok(msg) => msg,
-                Err(e) => {
-                  tracing::error!(local_addr=%self.local_addr, from=%src, multicast=%self.multicast, err=%e, "mdns client: failed to deserialize packet");
-                  continue;
-                }
-              };
-
-              futures::select! {
-                e = self.tx.send((msg, src)).fuse() => {
-                  if let Err(e) = e {
-                    tracing::error!(err=%e, "mdns client: failed to pass packet");
-                    return;
-                  }
-                },
-                _ = self.shutdown_rx.recv().fuse() => return,
+            let msg = match Message::decode(data) {
+              Ok(msg) => msg,
+              Err(e) => {
+                tracing::error!(local_addr=%self.local_addr, from=%src, multicast=%self.multicast, err=%e, "mdns client: failed to deserialize packet");
+                return ControlFlow::Continue(());
               }
-            },
-            Err(e) => {
-              tracing::error!(err=%e, "mdns client: failed to receive packet");
+            };
+
+            let tx = self.tx.send((msg, src));
+            futures::pin_mut!(tx);
+            let shutdown_fut = self.shutdown_rx.recv();
+            futures::pin_mut!(shutdown_fut);
+            let selector = futures::future::select(tx, shutdown_fut);
+
+            match selector.await {
+              futures::future::Either::Left((res, _)) => {
+                if let Err(e) = res {
+                  tracing::error!(err=%e, "mdns client: failed to pass packet");
+                  return ControlFlow::Break(());
+                }
+              }
+              futures::future::Either::Right(_) => return ControlFlow::Break(()),
             }
+
+            ControlFlow::Continue(())
+          }
+          Err(e) => {
+            tracing::error!(err=%e, "mdns client: failed to receive packet");
+            return ControlFlow::Continue(());
           }
         }
+      };
+
+      futures::pin_mut!(shutdown_fut);
+      futures::pin_mut!(handle);
+
+      let selector = futures::future::select(shutdown_fut, handle);
+      match selector.await {
+        futures::future::Either::Left(_) => return,
+        futures::future::Either::Right((cf, _)) => match cf {
+          ControlFlow::Break(()) => return,
+          ControlFlow::Continue(()) => continue,
+        },
       }
     }
   }
