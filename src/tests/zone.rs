@@ -174,6 +174,7 @@ async fn service_enum_ptr<R: Runtime>() {
   assert_eq!(ptr, &Name::from("_http._tcp.local."));
 }
 
+#[cfg(feature = "tokio")]
 test_suites!(tokio {
   bad_addr,
   service_addr,
@@ -186,6 +187,7 @@ test_suites!(tokio {
   service_enum_ptr,
 });
 
+#[cfg(feature = "smol")]
 test_suites!(smol {
   bad_addr,
   service_addr,
@@ -198,6 +200,7 @@ test_suites!(smol {
   service_enum_ptr,
 });
 
+#[cfg(feature = "async-std")]
 test_suites!(async_std {
   bad_addr,
   service_addr,

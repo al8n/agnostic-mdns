@@ -67,16 +67,19 @@ async fn server_lookup<R: Runtime>() {
   assert!(got_response, "No response from the server");
 }
 
+#[cfg(feature = "tokio")]
 test_suites!(tokio {
   server_start_stop,
   server_lookup,
 });
 
+#[cfg(feature = "smol")]
 test_suites!(smol {
   server_start_stop,
   server_lookup,
 });
 
+#[cfg(feature = "async-std")]
 test_suites!(async_std {
   server_start_stop,
   server_lookup,
