@@ -37,6 +37,7 @@ async fn server_lookup<R: Runtime>() {
     .with_timeout(Duration::from_millis(50))
     .with_disable_ipv6(true);
 
+  let mut got_response = false;
   match query_with::<R>(params).await {
     Ok(lookup) => {
       futures::pin_mut!(lookup);
@@ -47,6 +48,7 @@ async fn server_lookup<R: Runtime>() {
             assert_eq!(ent.name().as_str(), "hostname._foobar._tcp.local.");
             assert_eq!(ent.port(), 80);
             assert_eq!(ent.infos()[0].as_str(), "Local web server");
+            got_response = true;
           }
           Err(e) => {
             panic!("{e}");
@@ -61,6 +63,8 @@ async fn server_lookup<R: Runtime>() {
       panic!("{e}");
     }
   }
+
+  assert!(got_response, "No response from the server");
 }
 
 test_suites!(tokio {
