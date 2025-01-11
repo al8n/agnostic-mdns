@@ -133,7 +133,7 @@ jobs:
         path: ~/.cargo
         key: ${{ runner.os }}-coverage-dotcargo
     - name: Run test
-      run: cargo hack test --feature-powerset --exclude-no-default-features
+      run: cargo test --all-features
 
   docs:
     name: docs
