@@ -60,6 +60,7 @@ pub fn initialize_tests_tracing() {
   });
 }
 
+#[cfg(feature = "tokio")]
 fn tokio_run<F>(f: F)
 where
   F: Future<Output = ()>,
@@ -73,6 +74,7 @@ where
     .block_on(f);
 }
 
+#[cfg(feature = "smol")]
 fn smol_run<F>(f: F)
 where
   F: Future<Output = ()>,
@@ -81,6 +83,7 @@ where
   smol::block_on(f);
 }
 
+#[cfg(feature = "async-std")]
 fn async_std_run<F>(f: F)
 where
   F: Future<Output = ()>,
