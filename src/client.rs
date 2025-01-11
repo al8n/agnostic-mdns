@@ -52,14 +52,14 @@ impl ServiceEntry {
 
   /// Returns the IPv4 address of the service.
   #[inline]
-  pub const fn socket_v4(&self) -> Option<SocketAddrV4> {
-    self.socket_v4
+  pub fn ipv4_addr(&self) -> Option<&Ipv4Addr> {
+    self.socket_v4.as_ref().map(|addr| addr.ip())
   }
 
   /// Returns the IPv6 address of the service.
   #[inline]
-  pub const fn socket_v6(&self) -> Option<SocketAddrV6> {
-    self.socket_v6
+  pub fn ipv6_addr(&self) -> Option<&Ipv6Addr> {
+    self.socket_v6.as_ref().map(|addr| addr.ip())
   }
 
   /// Returns the port of the service.
@@ -173,89 +173,246 @@ impl QueryParam {
   }
 
   /// Sets the domain to search in.
+  ///
+  /// ## Example
+  ///
+  /// ```rust
+  /// use agnostic_mdns::client::QueryParam;
+  ///
+  /// let params = QueryParam::new("service._tcp".into())
+  ///  .with_domain("local.".parse().unwrap());
+  /// ```
   pub fn with_domain(mut self, domain: Name) -> Self {
     self.domain = domain;
     self
   }
 
   /// Returns the domain to search in.
+  ///
+  /// ## Example
+  ///
+  /// ```rust
+  /// use agnostic_mdns::client::QueryParam;
+  ///
+  /// let params = QueryParam::new("service._tcp".into())
+  /// .with_domain("local.".parse().unwrap());
+  ///
+  /// assert_eq!(params.domain().as_str(), "local.");
   pub const fn domain(&self) -> &Name {
     &self.domain
   }
 
   /// Sets the service to search for.
+  ///
+  /// ## Example
+  ///
+  /// ```rust
+  /// use agnostic_mdns::client::QueryParam;
+  ///
+  /// let params = QueryParam::new("service._tcp".into())
+  ///   .with_service("service._udp".into());
+  /// ```
   pub fn with_service(mut self, service: Name) -> Self {
     self.service = service;
     self
   }
 
   /// Returns the service to search for.
+  ///
+  /// ## Example
+  ///
+  /// ```rust
+  /// use agnostic_mdns::client::QueryParam;
+  ///
+  /// let params = QueryParam::new("service._tcp".into())
+  ///   .with_service("service._udp".into());
+  ///
+  /// assert_eq!(params.service().as_str(), "service._udp");
   pub const fn service(&self) -> &Name {
     &self.service
   }
 
   /// Sets the timeout for the query.
+  ///
+  /// ## Example
+  ///
+  /// ```rust
+  /// use agnostic_mdns::client::QueryParam;
+  ///
+  /// let params = QueryParam::new("service._tcp".into())
+  ///   .with_timeout(std::time::Duration::from_secs(1));
+  /// ```
   pub fn with_timeout(mut self, timeout: Duration) -> Self {
     self.timeout = timeout;
     self
   }
 
   /// Returns the timeout for the query.
+  ///
+  /// ## Example
+  ///
+  /// ```rust
+  /// use agnostic_mdns::client::QueryParam;
+  ///
+  /// let params = QueryParam::new("service._tcp".into())
+  ///   .with_timeout(std::time::Duration::from_secs(1));
+  ///
+  /// assert_eq!(params.timeout(), std::time::Duration::from_secs(1));
+  /// ```
   pub const fn timeout(&self) -> Duration {
     self.timeout
   }
 
   /// Sets the IPv4 interface to use for queries.
+  ///
+  /// ## Example
+  ///
+  /// ```rust
+  /// use agnostic_mdns::client::QueryParam;
+  ///
+  /// let params = QueryParam::new("service._tcp".into())
+  ///   .with_ipv4_interface("0.0.0.0".parse().unwrap());
+  /// ```
   pub fn with_ipv4_interface(mut self, ipv4_interface: Ipv4Addr) -> Self {
     self.ipv4_interface = Some(ipv4_interface);
     self
   }
 
   /// Returns the IPv4 interface to use for queries.
+  ///
+  /// ## Example
+  ///
+  /// ```rust
+  /// use agnostic_mdns::client::QueryParam;
+  ///
+  /// let params = QueryParam::new("service._tcp".into())
+  ///  .with_ipv4_interface("0.0.0.0".parse().unwrap());
+  ///
+  /// assert_eq!(params.ipv4_interface().unwrap(), &"0.0.0.0".parse::<std::net::Ipv4Addr>().unwrap());
+  /// ```
   pub const fn ipv4_interface(&self) -> Option<&Ipv4Addr> {
     self.ipv4_interface.as_ref()
   }
 
   /// Sets the IPv6 interface to use for queries.
+  ///
+  /// ## Example
+  ///
+  /// ```rust
+  /// use agnostic_mdns::client::QueryParam;
+  ///
+  /// let params = QueryParam::new("service._tcp".into())
+  ///   .with_ipv6_interface(1);
+  /// ```
   pub fn with_ipv6_interface(mut self, ipv6_interface: u32) -> Self {
     self.ipv6_interface = Some(ipv6_interface);
     self
   }
 
   /// Returns the IPv6 interface to use for queries.
+  ///
+  /// ## Example
+  ///
+  /// ```rust
+  /// use agnostic_mdns::client::QueryParam;
+  ///
+  /// let params = QueryParam::new("service._tcp".into())
+  ///   .with_ipv6_interface(1);
+  /// assert_eq!(params.ipv6_interface().unwrap(), 1);
+  /// ```
   pub const fn ipv6_interface(&self) -> Option<u32> {
     self.ipv6_interface
   }
 
   /// Sets whether to request unicast responses.
+  ///
+  /// ## Example
+  ///
+  /// ```rust
+  /// use agnostic_mdns::client::QueryParam;
+  ///
+  /// let params = QueryParam::new("service._tcp".into())
+  ///   .with_unicast_response(true);
+  /// ```
   pub fn with_unicast_response(mut self, want_unicast_response: bool) -> Self {
     self.want_unicast_response = want_unicast_response;
     self
   }
 
   /// Returns whether to request unicast responses.
+  ///
+  /// ## Example
+  ///
+  /// ```rust
+  /// use agnostic_mdns::client::QueryParam;
+  ///
+  /// let params = QueryParam::new("service._tcp".into())
+  ///   .with_unicast_response(true);
+  ///
+  /// assert_eq!(params.want_unicast_response(), true);
+  /// ```
   pub const fn want_unicast_response(&self) -> bool {
     self.want_unicast_response
   }
 
   /// Sets whether to disable IPv4 for MDNS operations.
+  ///
+  /// ## Example
+  ///
+  /// ```rust
+  /// use agnostic_mdns::client::QueryParam;
+  ///
+  /// let params = QueryParam::new("service._tcp".into())
+  ///   .with_disable_ipv4(true);
+  /// ```
   pub fn with_disable_ipv4(mut self, disable_ipv4: bool) -> Self {
     self.disable_ipv4 = disable_ipv4;
     self
   }
 
   /// Returns whether to disable IPv4 for MDNS operations.
+  ///
+  /// ## Example
+  ///
+  /// ```rust
+  /// use agnostic_mdns::client::QueryParam;
+  ///
+  /// let params = QueryParam::new("service._tcp".into())
+  ///   .with_disable_ipv4(true);
+  ///
+  /// assert_eq!(params.disable_ipv4(), true);
+  /// ```
   pub const fn disable_ipv4(&self) -> bool {
     self.disable_ipv4
   }
 
   /// Sets whether to disable IPv6 for MDNS operations.
+  ///
+  /// ## Example
+  ///
+  /// ```rust
+  /// use agnostic_mdns::client::QueryParam;
+  ///
+  /// let params = QueryParam::new("service._tcp".into())
+  ///   .with_disable_ipv6(true);
+  /// ```
   pub fn with_disable_ipv6(mut self, disable_ipv6: bool) -> Self {
     self.disable_ipv6 = disable_ipv6;
     self
   }
 
   /// Returns whether to disable IPv6 for MDNS operations.
+  ///
+  /// ## Example
+  ///
+  /// ```rust
+  /// use agnostic_mdns::client::QueryParam;
+  ///
+  /// let params = QueryParam::new("service._tcp".into())
+  ///   .with_disable_ipv6(true);
+  ///
+  /// assert_eq!(params.disable_ipv6(), true);
+  /// ```
   pub const fn disable_ipv6(&self) -> bool {
     self.disable_ipv6
   }
@@ -265,6 +422,17 @@ impl QueryParam {
   /// If `None`, the channel is unbounded.
   ///
   /// Default is `None`.
+  ///
+  /// ## Example
+  ///
+  /// ```rust
+  /// use agnostic_mdns::client::QueryParam;
+  ///
+  /// let params = QueryParam::new("service._tcp".into())
+  ///   .with_capacity(Some(10));
+  ///
+  /// assert_eq!(params.capacity().unwrap(), 10);
+  /// ```
   #[inline]
   pub const fn capacity(&self) -> Option<usize> {
     self.cap
@@ -275,6 +443,15 @@ impl QueryParam {
   /// If `None`, the channel is unbounded.
   ///
   /// Default is `None`.
+  ///
+  /// ## Example
+  ///
+  /// ```rust
+  /// use agnostic_mdns::client::QueryParam;
+  ///
+  /// let params = QueryParam::new("service._tcp".into())
+  ///  .with_capacity(Some(10));
+  /// ```
   #[inline]
   pub fn with_capacity(mut self, cap: Option<usize>) -> Self {
     self.cap = cap;

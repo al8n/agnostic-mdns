@@ -1,6 +1,6 @@
 use core::{convert::Infallible, error::Error, future::Future, marker::PhantomData, net::IpAddr};
 
-use std::{io, net::ToSocketAddrs, vec::Vec};
+use std::{io, net::ToSocketAddrs};
 
 use crate::invalid_input_err;
 
@@ -78,7 +78,7 @@ pub struct ServiceBuilder {
   hostname: Option<Name>,
   port: Option<u16>,
   ips: TinyVec<IpAddr>,
-  txt: Vec<SmolStr>,
+  txt: TinyVec<SmolStr>,
   ttl: u32,
   srv_priority: u16,
   srv_weight: u16,
@@ -94,7 +94,7 @@ impl ServiceBuilder {
       hostname: None,
       port: None,
       ips: TinyVec::new(),
-      txt: Vec::new(),
+      txt: TinyVec::new(),
       ttl: DEFAULT_TTL,
       srv_priority: 10,
       srv_weight: 1,
@@ -102,32 +102,91 @@ impl ServiceBuilder {
   }
 
   /// Gets the current instance name.
+  ///
+  /// ## Example
+  ///
+  /// ```rust
+  /// use agnostic_mdns::ServiceBuilder;
+  ///
+  /// let builder = ServiceBuilder::new("hostname".into(), "_http._tcp".into());
+  /// assert_eq!(builder.instance().as_str(), "hostname");
+  /// ```
   pub fn instance(&self) -> &SmolStr {
     &self.instance
   }
 
   /// Gets the current service name.
+  ///
+  /// ## Example
+  ///
+  /// ```rust
+  /// use agnostic_mdns::ServiceBuilder;
+  ///
+  /// let builder = ServiceBuilder::new("hostname".into(), "_http._tcp".into());
+  /// assert_eq!(builder.service().as_str(), "_http._tcp");
+  /// ```
   pub fn service(&self) -> &SmolStr {
     &self.service
   }
 
   /// Gets the current domain.
+  ///
+  /// ## Example
+  ///
+  /// ```rust
+  /// use agnostic_mdns::{Name, ServiceBuilder};
+  ///
+  /// let builder = ServiceBuilder::new("hostname".into(), "_http._tcp".into());
+  ///
+  /// assert!(builder.domain().is_none());
+  /// ```
   pub fn domain(&self) -> Option<&Name> {
     self.domain.as_ref()
   }
 
   /// Sets the domain for the service.
+  ///
+  /// ## Example
+  ///
+  /// ```rust
+  /// use agnostic_mdns::{Name, ServiceBuilder};
+  ///
+  /// let builder = ServiceBuilder::new("hostname".into(), "_http._tcp".into())
+  ///   .with_domain(Name::from("local."));
+  ///
+  /// assert_eq!(builder.domain().unwrap().as_str(), "local.");
+  /// ```
   pub fn with_domain(mut self, domain: Name) -> Self {
     self.domain = Some(domain);
     self
   }
 
   /// Gets the current host name.
+  ///
+  /// ## Example
+  ///
+  /// ```rust
+  /// use agnostic_mdns::{Name, ServiceBuilder};
+  ///
+  /// let builder = ServiceBuilder::new("hostname".into(), "_http._tcp".into());
+  ///   .with_hostname(Name::from("testhost."));
+  ///
+  /// assert_eq!(builder.hostname().unwrap().as_str(), "testhost.");
+  /// ```
   pub fn hostname(&self) -> Option<&Name> {
     self.hostname.as_ref()
   }
 
   /// Sets the host name for the service.
+  ///
+  /// ## Example
+  ///
+  /// ```rust
+  /// use agnostic_mdns::{Name, ServiceBuilder};
+  ///
+  /// let builder = ServiceBuilder::new("hostname".into(), "_http._tcp".into())
+  ///   .with_hostname(Name::from("testhost."));
+  /// ```
   pub fn with_hostname(mut self, hostname: Name) -> Self {
     self.hostname = Some(hostname);
     self
@@ -136,6 +195,18 @@ impl ServiceBuilder {
   /// Gets the TTL.
   ///
   /// Defaults to `120` seconds.
+  ///
+  /// ## Example
+  ///
+  /// ```rust
+  /// use agnostic_mdns::ServiceBuilder;
+  ///
+  /// let builder = ServiceBuilder::new("hostname".into(), "_http._tcp".into());
+  /// assert_eq!(builder.ttl(), 120);
+  ///
+  /// let builder = builder.with_ttl(60);
+  /// assert_eq!(builder.ttl(), 60);
+  /// ```
   pub fn ttl(&self) -> u32 {
     self.ttl
   }
@@ -143,6 +214,15 @@ impl ServiceBuilder {
   /// Sets the TTL for the service.
   ///
   /// Defaults to `120` seconds.
+  ///
+  /// ## Example
+  ///
+  /// ```rust
+  /// use agnostic_mdns::ServiceBuilder;
+  ///
+  /// let builder = ServiceBuilder::new("hostname".into(), "_http._tcp".into())
+  ///   .with_ttl(60);
+  /// ```
   pub fn with_ttl(mut self, ttl: u32) -> Self {
     self.ttl = ttl;
     self
@@ -151,6 +231,18 @@ impl ServiceBuilder {
   /// Gets the priority for SRV records.
   ///
   /// Defaults to `10`.
+  ///
+  /// ## Example
+  ///
+  /// ```rust
+  /// use agnostic_mdns::ServiceBuilder;
+  ///
+  /// let builder = ServiceBuilder::new("hostname".into(), "_http._tcp".into());
+  /// assert_eq!(builder.srv_priority(), 10);
+  ///
+  /// let builder = builder.with_srv_priority(5);
+  /// assert_eq!(builder.srv_priority(), 5);
+  /// ```
   pub fn srv_priority(&self) -> u16 {
     self.srv_priority
   }
@@ -158,6 +250,15 @@ impl ServiceBuilder {
   /// Sets the priority for SRV records.
   ///
   /// Defaults to `10`.
+  ///
+  /// ## Example
+  ///
+  /// ```rust
+  /// use agnostic_mdns::ServiceBuilder;
+  ///
+  /// let builder = ServiceBuilder::new("hostname".into(), "_http._tcp".into())
+  ///   .with_srv_priority(5);
+  /// ```
   pub fn with_srv_priority(mut self, priority: u16) -> Self {
     self.srv_priority = priority;
     self
@@ -166,6 +267,18 @@ impl ServiceBuilder {
   /// Gets the weight for SRV records.
   ///
   /// Defaults to `1`.
+  ///
+  /// ## Example
+  ///
+  /// ```rust
+  /// use agnostic_mdns::ServiceBuilder;
+  ///
+  /// let builder = ServiceBuilder::new("hostname".into(), "_http._tcp".into());
+  /// assert_eq!(builder.srv_weight(), 1);
+  ///
+  /// let builder = builder.with_srv_weight(5);
+  /// assert_eq!(builder.srv_weight(), 5);
+  /// ```
   pub fn srv_weight(&self) -> u16 {
     self.srv_weight
   }
@@ -173,51 +286,143 @@ impl ServiceBuilder {
   /// Sets the weight for SRV records.
   ///
   /// Defaults to `1`.
+  ///
+  /// ## Example
+  ///
+  /// ```rust
+  /// use agnostic_mdns::ServiceBuilder;
+  ///
+  /// let builder = ServiceBuilder::new("hostname".into(), "_http._tcp".into())
+  ///   .with_srv_weight(5);
+  /// ```
   pub fn with_srv_weight(mut self, weight: u16) -> Self {
     self.srv_weight = weight;
     self
   }
 
   /// Gets the current port.
+  ///
+  /// ## Example
+  ///
+  /// ```rust
+  /// use agnostic_mdns::ServiceBuilder;
+  ///
+  /// let builder = ServiceBuilder::new("hostname".into(), "_http._tcp".into());
+  /// assert!(builder.port().is_none());
+  /// ```
   pub fn port(&self) -> Option<u16> {
     self.port
   }
 
   /// Sets the port for the service.
+  ///
+  /// ## Example
+  ///
+  /// ```rust
+  /// use agnostic_mdns::ServiceBuilder;
+  ///
+  /// let builder = ServiceBuilder::new("hostname".into(), "_http._tcp".into())
+  ///   .with_port(80);
+  /// ```
   pub fn with_port(mut self, port: u16) -> Self {
     self.port = Some(port);
     self
   }
 
   /// Gets the current IP addresses.
+  ///
+  /// ## Example
+  ///
+  /// ```rust
+  /// use agnostic_mdns::ServiceBuilder;
+  /// use std::net::IpAddr;
+  ///
+  /// let builder = ServiceBuilder::new("hostname".into(), "_http._tcp".into());
+  /// assert!(builder.ips().is_empty());
+  ///
+  /// let builder = builder.with_ip("192.168.0.1".parse().unwrap());
+  ///
+  /// assert_eq!(builder.ips(), &[IpAddr::V4("192.168.0.1".parse().unwrap())]);
+  /// ```
   pub fn ips(&self) -> &[IpAddr] {
     &self.ips
   }
 
   /// Sets the IP addresses for the service.
+  ///
+  /// ## Example
+  ///
+  /// ```rust
+  /// use agnostic_mdns::ServiceBuilder;
+  /// use std::net::IpAddr;
+  ///
+  /// let builder = ServiceBuilder::new("hostname".into(), "_http._tcp".into())
+  ///   .with_ips([IpAddr::V4("192.168.0.1".parse().unwrap())].into_iter().collect());
+  /// ```
   pub fn with_ips(mut self, ips: TinyVec<IpAddr>) -> Self {
     self.ips = ips;
     self
   }
 
   /// Pushes an IP address to the list of IP addresses.
+  ///
+  /// ## Example
+  ///
+  /// ```rust
+  /// use agnostic_mdns::ServiceBuilder;
+  /// use std::net::IpAddr;
+  ///
+  /// let builder = ServiceBuilder::new("hostname".into(), "_http._tcp".into())
+  ///  .with_ip(IpAddr::V4("192.168.0.1".parse().unwrap()));
+  /// ```
   pub fn with_ip(mut self, ip: IpAddr) -> Self {
     self.ips.push(ip);
     self
   }
 
   /// Gets the current TXT records.
+  ///
+  /// ## Example
+  ///
+  /// ```rust
+  /// use agnostic_mdns::{ServiceBuilder, SmolStr};
+  ///
+  /// let builder = ServiceBuilder::new("hostname".into(), "_http._tcp".into());
+  /// assert!(builder.txt_records().is_empty());
+  ///
+  /// let builder = builder.with_txt_record("info".into());
+  ///
+  /// assert_eq!(builder.txt_records(), &[SmolStr::new("info")]);
+  /// ```
   pub fn txt_records(&self) -> &[SmolStr] {
     &self.txt
   }
 
   /// Sets the TXT records for the service.
-  pub fn with_txt_records(mut self, txt: Vec<SmolStr>) -> Self {
+  ///
+  /// ## Example
+  ///
+  /// ```rust
+  /// use agnostic_mdns::{ServiceBuilder, SmolStr};
+  ///
+  /// let builder = ServiceBuilder::new("hostname".into(), "_http._tcp".into())
+  ///   .with_txt_records([SmolStr::new("info")].into_iter().collect());
+  /// ```
+  pub fn with_txt_records(mut self, txt: TinyVec<SmolStr>) -> Self {
     self.txt = txt;
     self
   }
 
   /// Pushes a TXT record to the list of TXT records.
+  ///
+  /// ## Example
+  ///
+  /// ```rust
+  /// use agnostic_mdns::{ServiceBuilder, SmolStr};
+  ///
+  /// let builder = ServiceBuilder::new("hostname".into(), "_http._tcp".into())
+  ///  .with_txt_record("info".into());
+  /// ```
   pub fn with_txt_record(mut self, txt: SmolStr) -> Self {
     self.txt.push(txt);
     self
@@ -344,14 +549,13 @@ where
   type Runtime = R;
   type Error = Infallible;
 
-  async fn records(&self, name: &Name, rt: RecordType) -> Result<OneOrMore<Record>, Infallible> {
-    let qn = name;
+  async fn records(&self, qn: &Name, rt: RecordType) -> Result<OneOrMore<Record>, Infallible> {
     Ok(match () {
-      () if self.enum_addr.eq(qn) => self.service_enum(name, rt),
-      () if self.service_addr.eq(qn) => self.service_records(name, rt),
-      () if self.instance_addr.eq(qn) => self.instance_records(name, rt),
+      () if self.enum_addr.eq(qn) => self.service_enum(qn, rt),
+      () if self.service_addr.eq(qn) => self.service_records(qn, rt),
+      () if self.instance_addr.eq(qn) => self.instance_records(qn, rt),
       () if self.hostname.eq(qn) && matches!(rt, RecordType::A | RecordType::AAAA) => {
-        self.instance_records(name, rt)
+        self.instance_records(qn, rt)
       }
       _ => OneOrMore::new(),
     })

@@ -1,4 +1,5 @@
 use core::time::Duration;
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 
 use agnostic::Runtime;
 use futures::StreamExt;
@@ -17,6 +18,22 @@ async fn server_start_stop<R: Runtime>() {
   let serv = Server::<Service<R>>::new(s, ServerOptions::default())
     .await
     .unwrap();
+
+  let s = serv.zone();
+  assert_eq!(s.instance().as_str(), "hostname");
+  assert_eq!(s.hostname().as_str(), "testhost.");
+  assert_eq!(s.domain().as_str(), "local.");
+  assert_eq!(
+    s.ips(),
+    &[
+      IpAddr::V4("192.168.0.42".parse().unwrap()),
+      IpAddr::V6("2620:0:1000:1900:b0c2:d0b2:c411:18bc".parse().unwrap())
+    ]
+  );
+  assert_eq!(s.port(), 80);
+  assert_eq!(s.txt_records(), &["Local web server"]);
+
+  let _ = serv.options();
 
   serv.shutdown().await;
 }
@@ -46,7 +63,18 @@ async fn server_lookup<R: Runtime>() {
           Ok(ent) => {
             tracing::info!("Found service: {:?}", ent);
             assert_eq!(ent.name().as_str(), "hostname._foobar._tcp.local.");
+            assert_eq!(ent.host().as_str(), "testhost.");
             assert_eq!(ent.port(), 80);
+            assert_eq!(
+              ent.ipv4_addr().unwrap(),
+              &"192.168.0.42".parse::<Ipv4Addr>().unwrap()
+            );
+            assert_eq!(
+              ent.ipv6_addr().unwrap(),
+              &"2620:0:1000:1900:b0c2:d0b2:c411:18bc"
+                .parse::<Ipv6Addr>()
+                .unwrap()
+            );
             assert_eq!(ent.infos()[0].as_str(), "Local web server");
             got_response = true;
           }

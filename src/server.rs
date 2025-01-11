@@ -48,12 +48,31 @@ impl ServerOptions {
   }
 
   /// Returns the Ipv4 interface to bind the multicast listener to.
+  ///
+  /// ## Example
+  ///
+  /// ```rust
+  /// use agnostic_mdns::server::ServerOptions;
+  /// use std::net::Ipv4Addr;
+  ///
+  /// let opts = ServerOptions::new().with_ipv4_interface(Ipv4Addr::new(192, 168, 1, 1));
+  /// assert_eq!(opts.ipv4_interface(), Some(&Ipv4Addr::new(192, 168, 1, 1)));
+  /// ```
   #[inline]
   pub const fn ipv4_interface(&self) -> Option<&Ipv4Addr> {
     self.ipv4_interface.as_ref()
   }
 
   /// Sets the IPv4 interface to bind the multicast listener to.
+  ///
+  /// ## Example
+  ///
+  /// ```rust
+  /// use agnostic_mdns::server::ServerOptions;
+  /// use std::net::Ipv4Addr;
+  ///
+  /// let opts = ServerOptions::new().with_ipv4_interface(Ipv4Addr::new(192, 168, 1, 1));
+  /// ```
   #[inline]
   pub fn with_ipv4_interface(mut self, iface: Ipv4Addr) -> Self {
     self.ipv4_interface = Some(iface);
@@ -61,12 +80,29 @@ impl ServerOptions {
   }
 
   /// Returns the Ipv6 interface to bind the multicast listener to.
+  ///
+  /// ## Example
+  ///
+  /// ```rust
+  /// use agnostic_mdns::server::ServerOptions;
+  ///
+  /// let opts = ServerOptions::new().with_ipv6_interface(1);
+  /// assert_eq!(opts.ipv6_interface(), Some(1));
+  /// ```
   #[inline]
   pub const fn ipv6_interface(&self) -> Option<u32> {
     self.ipv6_interface
   }
 
   /// Sets the IPv6 interface to bind the multicast listener to.
+  ///
+  /// ## Example
+  ///
+  /// ```rust
+  /// use agnostic_mdns::server::ServerOptions;
+  ///
+  /// let opts = ServerOptions::new().with_ipv6_interface(1);
+  /// ```
   #[inline]
   pub fn with_ipv6_interface(mut self, index: u32) -> Self {
     self.ipv6_interface = Some(index);
@@ -77,10 +113,35 @@ impl ServerOptions {
   /// when there is an mDNS query for which the server has no response.
   ///
   /// Default is `false`.
+  ///
+  /// ## Example
+  ///
+  /// ```rust
+  /// use agnostic_mdns::server::ServerOptions;
+  ///
+  /// let opts = ServerOptions::new().with_log_empty_responses(true);
+  /// assert_eq!(opts.log_empty_responses(), true);
+  /// ```
   #[inline]
   pub fn with_log_empty_responses(mut self, log_empty_responses: bool) -> Self {
     self.log_empty_responses = log_empty_responses;
     self
+  }
+
+  /// Returns whether the server should print an informative message
+  /// when there is an mDNS query for which the server has no response.
+  ///
+  /// ## Example
+  ///
+  /// ```rust
+  /// use agnostic_mdns::server::ServerOptions;
+  ///
+  /// let opts = ServerOptions::new().with_log_empty_responses(true);
+  /// assert_eq!(opts.log_empty_responses(), true);
+  /// ```
+  #[inline]
+  pub const fn log_empty_responses(&self) -> bool {
+    self.log_empty_responses
   }
 }
 

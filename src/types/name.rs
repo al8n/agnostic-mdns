@@ -668,6 +668,24 @@ mod tests {
 
   const MAX_PRINTABLE_LABEL: &str =
     "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789x";
+
+  #[test]
+  fn from_ipv4() {
+    let ip = Ipv4Addr::new(192, 168, 0, 42);
+    let name = Name::from(IpAddr::V4(ip));
+    assert_eq!(name.as_ref(), "42.0.168.192.in-addr.arpa.");
+  }
+
+  #[test]
+  fn from_ipv6() {
+    let ip = Ipv6Addr::new(0x2620, 0, 0x1000, 0x1900, 0xb0c2, 0xd0b2, 0xc411, 0x18bc);
+    let name = Name::from(IpAddr::V6(ip));
+    assert_eq!(
+      name.as_str(),
+      "c.b.8.1.1.1.4.c.2.b.0.d.2.c.0.b.0.0.9.1.0.0.0.1.0.0.0.0.0.2.6.2.ip6.arpa."
+    );
+  }
+
   #[test]
   fn empty_domain() {
     let input = [0];

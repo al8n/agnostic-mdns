@@ -15,6 +15,7 @@ pub use name::Name;
 pub use record::{Record, RecordHeader};
 pub use record_data::RecordData;
 pub use record_type::{RecordType, UnknownRecordTypeStr};
+pub use smallvec_wrapper::{OneOrMore, TinyVec};
 pub use srv::SRV;
 
 pub(crate) use answer::Answer;
