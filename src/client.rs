@@ -10,10 +10,7 @@ use std::{
   task::{Context, Poll},
 };
 
-use agnostic::{
-  net::{Net, UdpSocket},
-  Runtime,
-};
+use agnostic_net::{runtime::RuntimeLite, Net, UdpSocket};
 use async_channel::{Receiver, Sender};
 use atomic_refcell::AtomicRefCell;
 use futures::{FutureExt, Stream};
@@ -177,7 +174,7 @@ impl QueryParam {
   /// ## Example
   ///
   /// ```rust
-  /// use agnostic_mdns::client::QueryParam;
+  /// use agnostic_mdns::QueryParam;
   ///
   /// let params = QueryParam::new("service._tcp".into())
   ///   .with_domain("local.".into());
@@ -192,7 +189,7 @@ impl QueryParam {
   /// ## Example
   ///
   /// ```rust
-  /// use agnostic_mdns::client::QueryParam;
+  /// use agnostic_mdns::QueryParam;
   ///
   /// let params = QueryParam::new("service._tcp".into())
   ///   .with_domain("local.".into());
@@ -207,7 +204,7 @@ impl QueryParam {
   /// ## Example
   ///
   /// ```rust
-  /// use agnostic_mdns::client::QueryParam;
+  /// use agnostic_mdns::QueryParam;
   ///
   /// let params = QueryParam::new("service._tcp".into())
   ///   .with_service("service._udp".into());
@@ -222,7 +219,7 @@ impl QueryParam {
   /// ## Example
   ///
   /// ```rust
-  /// use agnostic_mdns::client::QueryParam;
+  /// use agnostic_mdns::QueryParam;
   ///
   /// let params = QueryParam::new("service._tcp".into())
   ///   .with_service("service._udp".into());
@@ -237,7 +234,7 @@ impl QueryParam {
   /// ## Example
   ///
   /// ```rust
-  /// use agnostic_mdns::client::QueryParam;
+  /// use agnostic_mdns::QueryParam;
   ///
   /// let params = QueryParam::new("service._tcp".into())
   ///   .with_timeout(std::time::Duration::from_secs(1));
@@ -252,7 +249,7 @@ impl QueryParam {
   /// ## Example
   ///
   /// ```rust
-  /// use agnostic_mdns::client::QueryParam;
+  /// use agnostic_mdns::QueryParam;
   ///
   /// let params = QueryParam::new("service._tcp".into())
   ///   .with_timeout(std::time::Duration::from_secs(1));
@@ -268,7 +265,7 @@ impl QueryParam {
   /// ## Example
   ///
   /// ```rust
-  /// use agnostic_mdns::client::QueryParam;
+  /// use agnostic_mdns::QueryParam;
   ///
   /// let params = QueryParam::new("service._tcp".into())
   ///   .with_ipv4_interface("0.0.0.0".parse().unwrap());
@@ -283,7 +280,7 @@ impl QueryParam {
   /// ## Example
   ///
   /// ```rust
-  /// use agnostic_mdns::client::QueryParam;
+  /// use agnostic_mdns::QueryParam;
   ///
   /// let params = QueryParam::new("service._tcp".into())
   ///  .with_ipv4_interface("0.0.0.0".parse().unwrap());
@@ -299,7 +296,7 @@ impl QueryParam {
   /// ## Example
   ///
   /// ```rust
-  /// use agnostic_mdns::client::QueryParam;
+  /// use agnostic_mdns::QueryParam;
   ///
   /// let params = QueryParam::new("service._tcp".into())
   ///   .with_ipv6_interface(1);
@@ -314,7 +311,7 @@ impl QueryParam {
   /// ## Example
   ///
   /// ```rust
-  /// use agnostic_mdns::client::QueryParam;
+  /// use agnostic_mdns::QueryParam;
   ///
   /// let params = QueryParam::new("service._tcp".into())
   ///   .with_ipv6_interface(1);
@@ -329,7 +326,7 @@ impl QueryParam {
   /// ## Example
   ///
   /// ```rust
-  /// use agnostic_mdns::client::QueryParam;
+  /// use agnostic_mdns::QueryParam;
   ///
   /// let params = QueryParam::new("service._tcp".into())
   ///   .with_unicast_response(true);
@@ -344,7 +341,7 @@ impl QueryParam {
   /// ## Example
   ///
   /// ```rust
-  /// use agnostic_mdns::client::QueryParam;
+  /// use agnostic_mdns::QueryParam;
   ///
   /// let params = QueryParam::new("service._tcp".into())
   ///   .with_unicast_response(true);
@@ -360,7 +357,7 @@ impl QueryParam {
   /// ## Example
   ///
   /// ```rust
-  /// use agnostic_mdns::client::QueryParam;
+  /// use agnostic_mdns::QueryParam;
   ///
   /// let params = QueryParam::new("service._tcp".into())
   ///   .with_disable_ipv4(true);
@@ -375,7 +372,7 @@ impl QueryParam {
   /// ## Example
   ///
   /// ```rust
-  /// use agnostic_mdns::client::QueryParam;
+  /// use agnostic_mdns::QueryParam;
   ///
   /// let params = QueryParam::new("service._tcp".into())
   ///   .with_disable_ipv4(true);
@@ -391,7 +388,7 @@ impl QueryParam {
   /// ## Example
   ///
   /// ```rust
-  /// use agnostic_mdns::client::QueryParam;
+  /// use agnostic_mdns::QueryParam;
   ///
   /// let params = QueryParam::new("service._tcp".into())
   ///   .with_disable_ipv6(true);
@@ -406,7 +403,7 @@ impl QueryParam {
   /// ## Example
   ///
   /// ```rust
-  /// use agnostic_mdns::client::QueryParam;
+  /// use agnostic_mdns::QueryParam;
   ///
   /// let params = QueryParam::new("service._tcp".into())
   ///   .with_disable_ipv6(true);
@@ -426,7 +423,7 @@ impl QueryParam {
   /// ## Example
   ///
   /// ```rust
-  /// use agnostic_mdns::client::QueryParam;
+  /// use agnostic_mdns::QueryParam;
   ///
   /// let params = QueryParam::new("service._tcp".into())
   ///   .with_capacity(Some(10));
@@ -447,7 +444,7 @@ impl QueryParam {
   /// ## Example
   ///
   /// ```rust
-  /// use agnostic_mdns::client::QueryParam;
+  /// use agnostic_mdns::QueryParam;
   ///
   /// let params = QueryParam::new("service._tcp".into())
   ///  .with_capacity(Some(10));
@@ -517,9 +514,9 @@ impl Stream for Lookup {
 /// to a channel. Sends will not block, so clients should make sure to
 /// either read or buffer. This method will attempt to stop the query
 /// on cancellation.
-pub async fn query_with<R>(params: QueryParam) -> io::Result<Lookup>
+pub async fn query_with<N>(params: QueryParam) -> io::Result<Lookup>
 where
-  R: Runtime,
+  N: Net,
 {
   let (shutdown_tx, shutdown_rx) = async_channel::bounded::<()>(1);
   let (entry_tx, entry_rx) = match params.capacity() {
@@ -534,7 +531,7 @@ where
   };
 
   // create a new client
-  let client = Client::<R>::new(
+  let client = Client::<N>::new(
     !params.disable_ipv4 && ipv4(),
     !params.disable_ipv6 && ipv6(),
     params.ipv4_interface,
@@ -542,7 +539,7 @@ where
   )
   .await?;
 
-  R::spawn_detach(async move {
+  <N::Runtime as RuntimeLite>::spawn_detach(async move {
     match client
       .query_in(
         params.service.append_fqdn(&params.domain),
@@ -571,27 +568,27 @@ where
 }
 
 /// Similar to [`query_with`], however it uses all the default parameters
-pub async fn lookup<R>(service: Name) -> io::Result<Lookup>
+pub async fn lookup<N>(service: Name) -> io::Result<Lookup>
 where
-  R: Runtime,
+  N: Net,
 {
-  query_with::<R>(QueryParam::new(service)).await
+  query_with::<N>(QueryParam::new(service)).await
 }
 
 /// Provides a query interface that can be used to
 /// search for service providers using mDNS
-struct Client<R: Runtime> {
+struct Client<N: Net> {
   use_ipv4: bool,
   use_ipv6: bool,
 
-  ipv4_unicast_conn: Option<(SocketAddr, Arc<<R::Net as Net>::UdpSocket>)>,
-  ipv6_unicast_conn: Option<(SocketAddr, Arc<<R::Net as Net>::UdpSocket>)>,
+  ipv4_unicast_conn: Option<(SocketAddr, Arc<N::UdpSocket>)>,
+  ipv6_unicast_conn: Option<(SocketAddr, Arc<N::UdpSocket>)>,
 
-  ipv4_multicast_conn: Option<(SocketAddr, Arc<<R::Net as Net>::UdpSocket>)>,
-  ipv6_multicast_conn: Option<(SocketAddr, Arc<<R::Net as Net>::UdpSocket>)>,
+  ipv4_multicast_conn: Option<(SocketAddr, Arc<N::UdpSocket>)>,
+  ipv6_multicast_conn: Option<(SocketAddr, Arc<N::UdpSocket>)>,
 }
 
-impl<R: Runtime> Client<R> {
+impl<N: Net> Client<N> {
   async fn query_in(
     self,
     service: Name,
@@ -606,8 +603,8 @@ impl<R: Runtime> Client<R> {
     if self.use_ipv4 {
       if let Some((addr, conn)) = &self.ipv4_unicast_conn {
         tracing::info!(local_addr=%addr,"mdns client: starting to listen to unicast on IPv4");
-        R::spawn_detach(
-          PacketReceiver::<R>::new(
+        <N::Runtime as RuntimeLite>::spawn_detach(
+          PacketReceiver::<N>::new(
             *addr,
             false,
             conn.clone(),
@@ -620,8 +617,8 @@ impl<R: Runtime> Client<R> {
 
       if let Some((addr, conn)) = &self.ipv4_multicast_conn {
         tracing::info!(local_addr=%addr,"mdns client: starting to listen to multicast on IPv4");
-        R::spawn_detach(
-          PacketReceiver::<R>::new(
+        <N::Runtime as RuntimeLite>::spawn_detach(
+          PacketReceiver::<N>::new(
             *addr,
             false,
             conn.clone(),
@@ -636,8 +633,8 @@ impl<R: Runtime> Client<R> {
     if self.use_ipv6 {
       if let Some((addr, conn)) = &self.ipv6_unicast_conn {
         tracing::info!(local_addr=%addr,"mdns client: starting to listen to unicast on IPv6");
-        R::spawn_detach(
-          PacketReceiver::<R>::new(
+        <N::Runtime as RuntimeLite>::spawn_detach(
+          PacketReceiver::<N>::new(
             *addr,
             true,
             conn.clone(),
@@ -650,8 +647,8 @@ impl<R: Runtime> Client<R> {
 
       if let Some((addr, conn)) = &self.ipv6_multicast_conn {
         tracing::info!(local_addr=%addr,"mdns client: starting to listen to multicast on IPv6");
-        R::spawn_detach(
-          PacketReceiver::<R>::new(
+        <N::Runtime as RuntimeLite>::spawn_detach(
+          PacketReceiver::<N>::new(
             *addr,
             true,
             conn.clone(),
@@ -672,7 +669,7 @@ impl<R: Runtime> Client<R> {
     let mut inprogress: HashMap<Name, Arc<AtomicRefCell<ServiceEntryBuilder>>> = HashMap::new();
 
     // Listen until we reach the timeout
-    let finish = R::sleep(timeout);
+    let finish = <N::Runtime as RuntimeLite>::sleep(timeout);
     futures::pin_mut!(finish);
 
     loop {
@@ -849,7 +846,7 @@ impl<R: Runtime> Client<R> {
 
     // Establish unicast connections
     let mut uconn4 = if v4 {
-      match unicast_udp4_socket::<R>(ipv4_interface) {
+      match unicast_udp4_socket::<N>(ipv4_interface) {
         Err(e) => {
           tracing::error!(err=%e, "mdns client: failed to bind to udp4 port");
           None
@@ -864,7 +861,7 @@ impl<R: Runtime> Client<R> {
     };
 
     let mut uconn6 = if v6 {
-      match unicast_udp6_socket::<R>(ipv6_interface) {
+      match unicast_udp6_socket::<N>(ipv6_interface) {
         Err(e) => {
           tracing::error!(err=%e, "mdns client: failed to bind to udp6 port");
           None
@@ -880,7 +877,7 @@ impl<R: Runtime> Client<R> {
 
     // Establish multicast connections
     let mut mconn4 = if v4 {
-      match multicast_udp4_socket::<R>(ipv4_interface, MDNS_PORT) {
+      match multicast_udp4_socket::<N>(ipv4_interface, MDNS_PORT) {
         Err(e) => {
           tracing::error!(err=%e, "mdns client: failed to bind to udp4 port");
           None
@@ -895,7 +892,7 @@ impl<R: Runtime> Client<R> {
     };
 
     let mut mconn6 = if v6 {
-      match multicast_udp6_socket::<R>(ipv6_interface, MDNS_PORT) {
+      match multicast_udp6_socket::<N>(ipv6_interface, MDNS_PORT) {
         Err(e) => {
           tracing::error!(err=%e, "mdns client: failed to bind to udp6 port");
           None
@@ -947,20 +944,26 @@ impl<R: Runtime> Client<R> {
   }
 }
 
-struct PacketReceiver<R: Runtime> {
-  conn: Arc<<R::Net as Net>::UdpSocket>,
+struct PacketReceiver<N>
+where
+  N: Net,
+{
+  conn: Arc<N::UdpSocket>,
   tx: Sender<(Message, SocketAddr)>,
   shutdown_rx: Receiver<()>,
   local_addr: SocketAddr,
   multicast: bool,
 }
 
-impl<R: Runtime> PacketReceiver<R> {
+impl<N> PacketReceiver<N>
+where
+  N: Net,
+{
   #[inline]
   const fn new(
     local_addr: SocketAddr,
     multicast: bool,
-    conn: Arc<<R::Net as Net>::UdpSocket>,
+    conn: Arc<N::UdpSocket>,
     tx: Sender<(Message, SocketAddr)>,
     shutdown_rx: Receiver<()>,
   ) -> Self {

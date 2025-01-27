@@ -5,7 +5,7 @@ use std::{io, net::ToSocketAddrs};
 use crate::invalid_input_err;
 
 use super::types::{Name, Record, RecordData, RecordType, SRV};
-use agnostic::Runtime;
+use agnostic_net::runtime::RuntimeLite;
 use smallvec_wrapper::{OneOrMore, TinyVec};
 use smol_str::{format_smolstr, SmolStr};
 use triomphe::Arc;
@@ -36,7 +36,7 @@ pub enum ServiceError {
 /// to serve records dynamically
 pub trait Zone: Send + Sync + 'static {
   /// The runtime type
-  type Runtime: Runtime;
+  type Runtime: RuntimeLite;
 
   /// The error type of the zone
   type Error: core::error::Error + Send + Sync + 'static;
@@ -436,7 +436,7 @@ impl ServiceBuilder {
   // hostName A/AAAA records.
   pub async fn finalize<R>(self) -> io::Result<Service<R>>
   where
-    R: Runtime,
+    R: RuntimeLite,
   {
     let domain = match self.domain {
       Some(domain) if !domain.is_fqdn() => {
@@ -544,7 +544,7 @@ pub struct Service<R> {
 
 impl<R> Zone for Service<R>
 where
-  R: Runtime,
+  R: RuntimeLite,
 {
   type Runtime = R;
   type Error = Infallible;

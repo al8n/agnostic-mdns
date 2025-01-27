@@ -13,7 +13,22 @@ use crate::{
 
 use super::*;
 
-async fn bad_addr<R: Runtime>() {
+macro_rules! test_suites {
+  ($runtime:ident {
+    $($name:ident),+$(,)?
+  }) => {
+    $(
+      paste::paste! {
+        #[test]
+        fn [< $runtime _ $name >]() {
+          $crate::tests::[< $runtime _run >]($name::<agnostic_net::runtime::[< $runtime >]::[< $runtime:camel Runtime>]>());
+        }
+      }
+    )*
+  }
+}
+
+async fn bad_addr<R: RuntimeLite>() {
   let s = make_service::<R>().await;
 
   let recs = s
@@ -23,7 +38,7 @@ async fn bad_addr<R: Runtime>() {
   assert!(recs.is_empty(), "bad: {recs:?}");
 }
 
-async fn service_addr<R: Runtime>() {
+async fn service_addr<R: RuntimeLite>() {
   let s = make_service::<R>().await;
 
   let recs = s
@@ -43,7 +58,7 @@ async fn service_addr<R: Runtime>() {
   matches!(recs[4].data(), RecordData::TXT(_));
 }
 
-async fn instance_addr_any<R: Runtime>() {
+async fn instance_addr_any<R: RuntimeLite>() {
   let s = make_service::<R>().await;
 
   let recs = s
@@ -58,7 +73,7 @@ async fn instance_addr_any<R: Runtime>() {
   matches!(recs[3].data(), RecordData::TXT(_));
 }
 
-async fn instance_addr_srv<R: Runtime>() {
+async fn instance_addr_srv<R: RuntimeLite>() {
   let s = make_service::<R>().await;
 
   let recs = s
@@ -77,7 +92,7 @@ async fn instance_addr_srv<R: Runtime>() {
   assert_eq!(srv.port(), s.port());
 }
 
-async fn instance_addr_a<R: Runtime>() {
+async fn instance_addr_a<R: RuntimeLite>() {
   let s = make_service::<R>().await;
 
   let recs = s
@@ -93,7 +108,7 @@ async fn instance_addr_a<R: Runtime>() {
   assert_eq!(a, &"192.168.0.42".parse::<Ipv4Addr>().unwrap());
 }
 
-async fn instance_addr_aaaa<R: Runtime>() {
+async fn instance_addr_aaaa<R: RuntimeLite>() {
   let s = make_service::<R>().await;
 
   let recs = s
@@ -114,7 +129,7 @@ async fn instance_addr_aaaa<R: Runtime>() {
   );
 }
 
-async fn instance_addr_txt<R: Runtime>() {
+async fn instance_addr_txt<R: RuntimeLite>() {
   let s = make_service::<R>().await;
 
   let recs = s
@@ -130,7 +145,7 @@ async fn instance_addr_txt<R: Runtime>() {
   assert_eq!(&txt[0], &s.txt_records()[0]);
 }
 
-async fn hostname_query<R: Runtime>() {
+async fn hostname_query<R: RuntimeLite>() {
   let questions = [
     (
       ("testhost.".into(), RecordType::A),
@@ -159,7 +174,7 @@ async fn hostname_query<R: Runtime>() {
   }
 }
 
-async fn service_enum_ptr<R: Runtime>() {
+async fn service_enum_ptr<R: RuntimeLite>() {
   let s = make_service::<R>().await;
 
   let recs = s

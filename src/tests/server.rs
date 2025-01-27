@@ -1,7 +1,7 @@
 use core::time::Duration;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 
-use agnostic::Runtime;
+use agnostic_net::Net;
 use futures::StreamExt;
 
 use crate::{
@@ -13,9 +13,24 @@ use crate::{
 
 use super::make_service_with_service_name;
 
-async fn server_start_stop<R: Runtime>() {
-  let s = make_service::<R>().await;
-  let serv = Server::<Service<R>>::new(s, ServerOptions::default())
+macro_rules! test_suites {
+  ($runtime:ident {
+    $($name:ident),+$(,)?
+  }) => {
+    $(
+      paste::paste! {
+        #[test]
+        fn [< $runtime _ $name >]() {
+          $crate::tests::[< $runtime _run >]($name::<agnostic_net::[< $runtime >]::Net>());
+        }
+      }
+    )*
+  }
+}
+
+async fn server_start_stop<N: Net>() {
+  let s = make_service::<N::Runtime>().await;
+  let serv = Server::<N, Service<N::Runtime>>::new(s, ServerOptions::default())
     .await
     .unwrap();
 
@@ -38,9 +53,9 @@ async fn server_start_stop<R: Runtime>() {
   serv.shutdown().await;
 }
 
-async fn server_lookup<R: Runtime>() {
+async fn server_lookup<N: Net>() {
   let s = make_service_with_service_name("_foobar._tcp").await;
-  let serv = Server::<Service<R>>::new(s, ServerOptions::default())
+  let serv = Server::<N, Service<N::Runtime>>::new(s, ServerOptions::default())
     .await
     .unwrap();
 
@@ -55,7 +70,7 @@ async fn server_lookup<R: Runtime>() {
     .with_disable_ipv6(true);
 
   let mut got_response = false;
-  match query_with::<R>(params).await {
+  match query_with::<N>(params).await {
     Ok(lookup) => {
       futures::pin_mut!(lookup);
       while let Some(res) = lookup.next().await {

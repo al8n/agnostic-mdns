@@ -1,6 +1,6 @@
 [package]
 name = "agnostic-mdns"
-version = "0.1.1"
+version = "0.2.0"
 edition = "2021"
 repository = "https://github.com/al8n/agnostic-mdns"
 homepage = "https://github.com/al8n/agnostic-mdns"
@@ -30,12 +30,12 @@ required-features = ["smol"]
 default = ["std"]
 std = []
 
-tokio = ["agnostic/tokio", "std"]
-async-std = ["agnostic/async-std", "std"]
-smol = ["agnostic/smol", "std"]
+tokio = ["agnostic-net/tokio", "std"]
+async-std = ["agnostic-net/async-std", "std"]
+smol = ["agnostic-net/smol", "std"]
 
 [dependencies]
-agnostic = { version = "0.5", features = ["dns", "net"] }
+agnostic-net = { version = "0.1" }
 atomic_refcell = "0.1"
 async-channel = "2"
 either = "1"
@@ -51,14 +51,14 @@ thiserror = "2"
 tracing = "0.1"
 
 [target.'cfg(unix)'.dependencies]
-rustix = { version = "0.38", features = ["system"] }
+rustix = { version = "0.38", features = ["system", "net"] }
 
 [target.'cfg(windows)'.dependencies]
 hostname = "0.4"
 
 [dev-dependencies]
 paste = "1"
-agnostic = { version = "0.5", features = ["dns", "net", "tokio", "async-std", "smol"] }
+agnostic-net = { version = "0.1", features = ["tokio", "async-std", "smol"] }
 tracing-subscriber = { version = "0.3", features = [
   "env-filter",
   "tracing-log",
