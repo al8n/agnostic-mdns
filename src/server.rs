@@ -1,9 +1,9 @@
 use core::net::{Ipv4Addr, SocketAddr};
 use std::{io, ops::ControlFlow};
 
-use agnostic::{
-  net::{Net, UdpSocket},
-  AsyncSpawner, Runtime, RuntimeLite,
+use agnostic_net::{
+  runtime::{AsyncSpawner, RuntimeLite},
+  Net, UdpSocket,
 };
 use async_channel::{Receiver, Sender};
 use atomic_refcell::AtomicRefCell;
@@ -52,7 +52,7 @@ impl ServerOptions {
   /// ## Example
   ///
   /// ```rust
-  /// use agnostic_mdns::server::ServerOptions;
+  /// use agnostic_mdns::ServerOptions;
   /// use std::net::Ipv4Addr;
   ///
   /// let opts = ServerOptions::new().with_ipv4_interface(Ipv4Addr::new(192, 168, 1, 1));
@@ -68,7 +68,7 @@ impl ServerOptions {
   /// ## Example
   ///
   /// ```rust
-  /// use agnostic_mdns::server::ServerOptions;
+  /// use agnostic_mdns::ServerOptions;
   /// use std::net::Ipv4Addr;
   ///
   /// let opts = ServerOptions::new().with_ipv4_interface(Ipv4Addr::new(192, 168, 1, 1));
@@ -84,7 +84,7 @@ impl ServerOptions {
   /// ## Example
   ///
   /// ```rust
-  /// use agnostic_mdns::server::ServerOptions;
+  /// use agnostic_mdns::ServerOptions;
   ///
   /// let opts = ServerOptions::new().with_ipv6_interface(1);
   /// assert_eq!(opts.ipv6_interface(), Some(1));
@@ -99,7 +99,7 @@ impl ServerOptions {
   /// ## Example
   ///
   /// ```rust
-  /// use agnostic_mdns::server::ServerOptions;
+  /// use agnostic_mdns::ServerOptions;
   ///
   /// let opts = ServerOptions::new().with_ipv6_interface(1);
   /// ```
@@ -117,7 +117,7 @@ impl ServerOptions {
   /// ## Example
   ///
   /// ```rust
-  /// use agnostic_mdns::server::ServerOptions;
+  /// use agnostic_mdns::ServerOptions;
   ///
   /// let opts = ServerOptions::new().with_log_empty_responses(true);
   /// assert_eq!(opts.log_empty_responses(), true);
@@ -134,7 +134,7 @@ impl ServerOptions {
   /// ## Example
   ///
   /// ```rust
-  /// use agnostic_mdns::server::ServerOptions;
+  /// use agnostic_mdns::ServerOptions;
   ///
   /// let opts = ServerOptions::new().with_log_empty_responses(true);
   /// assert_eq!(opts.log_empty_responses(), true);
@@ -146,25 +146,35 @@ impl ServerOptions {
 }
 
 /// The builder for [`Server`].
-pub struct Server<Z: Zone> {
+pub struct Server<N, Z>
+where
+  N: Net,
+  Z: Zone<Runtime = N::Runtime>,
+{
   zone: Arc<Z>,
   opts: ServerOptions,
   handles: AtomicRefCell<
     FuturesUnordered<<<Z::Runtime as RuntimeLite>::Spawner as AsyncSpawner>::JoinHandle<()>>,
   >,
   shutdown_tx: Sender<()>,
+  _m: std::marker::PhantomData<N>,
 }
 
-impl<Z> Drop for Server<Z>
+impl<N, Z> Drop for Server<N, Z>
 where
-  Z: Zone,
+  N: Net,
+  Z: Zone<Runtime = N::Runtime>,
 {
   fn drop(&mut self) {
     self.shutdown_tx.close();
   }
 }
 
-impl<Z: Zone> Server<Z> {
+impl<N, Z> Server<N, Z>
+where
+  N: Net,
+  Z: Zone<Runtime = N::Runtime>,
+{
   /// Creates a new mDNS server.
   pub async fn new(zone: Z, opts: ServerOptions) -> io::Result<Self> {
     let (shutdown_tx, shutdown_rx) = async_channel::bounded(1);
@@ -173,8 +183,8 @@ impl<Z: Zone> Server<Z> {
     let handles = FuturesUnordered::new();
 
     let v4 = if ipv4() {
-      match multicast_udp4_socket::<Z::Runtime>(opts.ipv4_interface, MDNS_PORT) {
-        Ok(conn) => Some(Processor::<Z::Runtime, Z>::new(
+      match multicast_udp4_socket::<N>(opts.ipv4_interface, MDNS_PORT) {
+        Ok(conn) => Some(Processor::<N, Z>::new(
           conn,
           zone.clone(),
           opts.log_empty_responses,
@@ -190,8 +200,8 @@ impl<Z: Zone> Server<Z> {
     };
 
     let v6 = if ipv6() {
-      match multicast_udp6_socket::<Z::Runtime>(opts.ipv6_interface, MDNS_PORT) {
-        Ok(conn) => Some(Processor::<Z::Runtime, Z>::new(
+      match multicast_udp6_socket::<N>(opts.ipv6_interface, MDNS_PORT) {
+        Ok(conn) => Some(Processor::<N, Z>::new(
           conn,
           zone.clone(),
           opts.log_empty_responses,
@@ -208,14 +218,14 @@ impl<Z: Zone> Server<Z> {
 
     match (v4, v6) {
       (Some(v4), Some(v6)) => {
-        handles.push(<Z::Runtime as RuntimeLite>::Spawner::spawn(v4.process()));
-        handles.push(<Z::Runtime as RuntimeLite>::Spawner::spawn(v6.process()));
+        handles.push(<N::Runtime as RuntimeLite>::Spawner::spawn(v4.process()));
+        handles.push(<N::Runtime as RuntimeLite>::Spawner::spawn(v6.process()));
       }
       (Some(v4), None) => {
-        handles.push(<Z::Runtime as RuntimeLite>::Spawner::spawn(v4.process()));
+        handles.push(<N::Runtime as RuntimeLite>::Spawner::spawn(v4.process()));
       }
       (None, Some(v6)) => {
-        handles.push(<Z::Runtime as RuntimeLite>::Spawner::spawn(v6.process()));
+        handles.push(<N::Runtime as RuntimeLite>::Spawner::spawn(v6.process()));
       }
       (None, None) => {
         return Err(io::Error::new(
@@ -230,6 +240,7 @@ impl<Z: Zone> Server<Z> {
       opts,
       handles: AtomicRefCell::new(handles),
       shutdown_tx,
+      _m: std::marker::PhantomData,
     })
   }
 
@@ -259,9 +270,13 @@ impl<Z: Zone> Server<Z> {
   }
 }
 
-struct Processor<R: Runtime, Z: Zone> {
+struct Processor<N, Z>
+where
+  N: Net,
+  Z: Zone,
+{
   zone: Arc<Z>,
-  conn: <R::Net as Net>::UdpSocket,
+  conn: N::UdpSocket,
   #[allow(dead_code)]
   local_addr: SocketAddr,
   /// Indicates the server should print an informative message
@@ -270,9 +285,13 @@ struct Processor<R: Runtime, Z: Zone> {
   shutdown_rx: Receiver<()>,
 }
 
-impl<R: Runtime, Z: Zone> Processor<R, Z> {
+impl<N, Z> Processor<N, Z>
+where
+  N: Net,
+  Z: Zone,
+{
   fn new(
-    conn: <R::Net as Net>::UdpSocket,
+    conn: N::UdpSocket,
     zone: Arc<Z>,
     log_empty_responses: bool,
     shutdown_rx: Receiver<()>,
@@ -328,7 +347,7 @@ impl<R: Runtime, Z: Zone> Processor<R, Z> {
         }
         futures::future::Either::Right((res, _)) => {
           if let ControlFlow::Continue(true) = res {
-            R::yield_now().await;
+            <N::Runtime as RuntimeLite>::yield_now().await;
           }
         }
       }

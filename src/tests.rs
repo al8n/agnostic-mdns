@@ -1,33 +1,18 @@
 use core::future::Future;
 
-use agnostic::Runtime;
+use agnostic_net::runtime::RuntimeLite;
 
 use super::{Service, ServiceBuilder};
-
-macro_rules! test_suites {
-  ($runtime:ident {
-    $($name:ident),+$(,)?
-  }) => {
-    $(
-      paste::paste! {
-        #[test]
-        fn [< $runtime _ $name >]() {
-          $crate::tests::[< $runtime _run >]($name::<agnostic::[< $runtime >]::[< $runtime:camel Runtime >]>());
-        }
-      }
-    )*
-  }
-}
 
 mod client;
 mod server;
 mod zone;
 
-pub(crate) async fn make_service<R: Runtime>() -> Service<R> {
+pub(crate) async fn make_service<R: RuntimeLite>() -> Service<R> {
   make_service_with_service_name::<R>("_http._tcp").await
 }
 
-pub(crate) async fn make_service_with_service_name<R: Runtime>(name: &str) -> Service<R> {
+pub(crate) async fn make_service_with_service_name<R: RuntimeLite>(name: &str) -> Service<R> {
   ServiceBuilder::new("hostname".into(), name.into())
     .with_domain("local.".into())
     .with_hostname("testhost.".into())
@@ -45,7 +30,7 @@ pub fn initialize_tests_tracing() {
   use std::sync::Once;
   static TRACE: Once = Once::new();
   TRACE.call_once(|| {
-    let filter = std::env::var("AGNOSTIC_MDNS_TESTING_LOG").unwrap_or_else(|_| "trace".to_owned());
+    let filter = std::env::var("AGNOSTIC_MDNS_TESTING_LOG").unwrap_or_else(|_| "info".to_owned());
     tracing::subscriber::set_global_default(
       tracing_subscriber::fmt::fmt()
         .without_time()

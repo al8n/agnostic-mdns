@@ -22,9 +22,12 @@ const MDNS_PORT: u16 = 5353;
 const MAX_PAYLOAD_SIZE: usize = 9000;
 
 /// mDNS client
-pub mod client;
+mod client;
+pub use client::*;
+
 /// mDNS server
-pub mod server;
+mod server;
+pub use server::*;
 
 mod types;
 use smol_str::format_smolstr;
@@ -37,34 +40,100 @@ pub use types::*;
 #[cfg(feature = "tokio")]
 #[cfg_attr(docsrs, doc(cfg(feature = "tokio")))]
 pub mod tokio {
-  pub use agnostic::tokio::TokioRuntime;
+  use std::io;
+
+  pub use agnostic_net::{runtime::tokio::TokioRuntime as Runtime, tokio::Net};
+
+  use super::{Lookup, Name, QueryParam};
 
   /// A service that can be used with `tokio` runtime
-  pub type TokioService = super::Service<TokioRuntime>;
+  pub type Service = super::Service<Runtime>;
+
+  /// A server that can be used with `tokio` runtime
+  pub type Server = super::server::Server<Net, Service>;
+
+  /// Looks up a given service, in a domain, waiting at most
+  /// for a timeout before finishing the query. The results are streamed
+  /// to a channel. Sends will not block, so clients should make sure to
+  /// either read or buffer. This method will attempt to stop the query
+  /// on cancellation.
+  #[inline]
+  pub async fn query_with(params: QueryParam) -> io::Result<Lookup> {
+    super::client::query_with::<Net>(params).await
+  }
+
+  /// Similar to [`query_with`], however it uses all the default parameters
+  #[inline]
+  pub async fn lookup(service: Name) -> io::Result<Lookup> {
+    query_with(QueryParam::new(service)).await
+  }
 }
 
 /// Types for `smol` runtime
 #[cfg(feature = "smol")]
 #[cfg_attr(docsrs, doc(cfg(feature = "smol")))]
 pub mod smol {
-  pub use agnostic::smol::SmolRuntime;
+  use super::{Lookup, Name, QueryParam};
+  use std::io;
 
-  /// A service that
-  /// can be used with `smol` runtime
-  pub type SmolService = super::Service<SmolRuntime>;
+  pub use agnostic_net::{runtime::smol::SmolRuntime as Runtime, smol::Net};
+
+  /// A service that can be used with `smol` runtime
+  pub type Service = super::Service<Runtime>;
+
+  /// A server that can be used with `smol` runtime
+  pub type Server = super::server::Server<Net, Service>;
+
+  /// Looks up a given service, in a domain, waiting at most
+  /// for a timeout before finishing the query. The results are streamed
+  /// to a channel. Sends will not block, so clients should make sure to
+  /// either read or buffer. This method will attempt to stop the query
+  /// on cancellation.
+  #[inline]
+  pub async fn query_with(params: QueryParam) -> io::Result<Lookup> {
+    super::client::query_with::<Net>(params).await
+  }
+
+  /// Similar to [`query_with`], however it uses all the default parameters
+  #[inline]
+  pub async fn lookup(service: Name) -> io::Result<Lookup> {
+    query_with(QueryParam::new(service)).await
+  }
 }
 
 /// Types for `async-std` runtime
 #[cfg(feature = "async-std")]
 #[cfg_attr(docsrs, doc(cfg(feature = "async-std")))]
 pub mod async_std {
-  pub use agnostic::async_std::AsyncStdRuntime;
+  use super::{Lookup, Name, QueryParam};
+  use std::io;
+
+  pub use agnostic_net::{async_std::Net, runtime::async_std::AsyncStdRuntime as Runtime};
 
   /// A service that can be used with `async-std` runtime
-  pub type AsyncStdService = super::Service<AsyncStdRuntime>;
+  pub type Service = super::Service<Runtime>;
+
+  /// A server that can be used with `async-std` runtime
+  pub type Server = super::server::Server<Net, Service>;
+
+  /// Looks up a given service, in a domain, waiting at most
+  /// for a timeout before finishing the query. The results are streamed
+  /// to a channel. Sends will not block, so clients should make sure to
+  /// either read or buffer. This method will attempt to stop the query
+  /// on cancellation.
+  #[inline]
+  pub async fn query_with(params: QueryParam) -> io::Result<Lookup> {
+    super::client::query_with::<Net>(params).await
+  }
+
+  /// Similar to [`query_with`], however it uses all the default parameters
+  #[inline]
+  pub async fn lookup(service: Name) -> io::Result<Lookup> {
+    query_with(QueryParam::new(service)).await
+  }
 }
 
-pub use agnostic::{self, Runtime, RuntimeLite};
+pub use agnostic_net as net;
 
 mod zone;
 pub use zone::*;
