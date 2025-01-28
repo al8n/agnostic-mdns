@@ -3,11 +3,9 @@ mod name;
 mod query;
 mod record;
 mod record_data;
-mod record_type;
 
 pub use record::RecordRef;
 pub use record_data::{RecordDataRef, A, AAAA, PTR, SRV, TXT};
-pub use record_type::{RecordType, UnknownRecordTypeStr};
 pub use smallvec_wrapper::{OneOrMore, TinyVec};
 
 pub(crate) use message::Message;

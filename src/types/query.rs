@@ -1,11 +1,11 @@
-use super::{Name, ProtoError, RecordType};
+use super::{Name, ProtoError};
 use dns_protocol::{Error, Flags, Message, Question, ResourceType};
 use smol_str::SmolStr;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Query {
   name: SmolStr,
-  ty: RecordType,
+  ty: ResourceType,
   want_unicast_response: bool,
 }
 
@@ -14,7 +14,7 @@ impl Query {
   pub const fn new(name: SmolStr, want_unicast_response: bool) -> Self {
     Self {
       name,
-      ty: RecordType::PTR,
+      ty: ResourceType::Ptr,
       want_unicast_response,
     }
   }

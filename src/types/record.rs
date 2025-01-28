@@ -5,9 +5,7 @@ use either::Either;
 use smol_str::SmolStr;
 use triomphe::Arc;
 
-use super::{
-  record_data::RecordData, Name, ProtoError, RecordDataRef, RecordType, DNS_CLASS_IN, TXT,
-};
+use super::{record_data::RecordData, Name, ProtoError, RecordDataRef, DNS_CLASS_IN, TXT};
 
 const IPV4_LEN: usize = 4;
 const IPV6_LEN: usize = 16;
@@ -117,7 +115,8 @@ impl Record {
       return Err(ProtoError::BufferTooSmall);
     }
 
-    let ty = RecordType::from(u16::from_be_bytes([src[off], src[off + 1]]));
+    let ty = ResourceType::try_from(u16::from_be_bytes([src[off], src[off + 1]]))
+      .map_err(|_| ProtoError::InvalidRdata)?;
     off += U16_SIZE;
     let class = u16::from_be_bytes([src[off], src[off + 1]]);
     off += U16_SIZE;
@@ -135,7 +134,7 @@ impl Record {
     let src = &src[..off + rdlen];
     let len = src.len();
     let data = match ty {
-      RecordType::A => {
+      ResourceType::A => {
         if off + IPV4_LEN > len {
           return Err(ProtoError::NotEnoughData);
         }
@@ -144,7 +143,7 @@ impl Record {
         off += IPV4_LEN;
         RecordData::A(Ipv4Addr::from(octets))
       }
-      RecordType::AAAA => {
+      ResourceType::AAAA => {
         if off + IPV6_LEN > len {
           return Err(ProtoError::NotEnoughData);
         }
@@ -153,12 +152,12 @@ impl Record {
         off += IPV6_LEN;
         RecordData::AAAA(Ipv6Addr::from(octets))
       }
-      RecordType::PTR => {
+      ResourceType::Ptr => {
         let (name, off1) = Name::decode(src, off)?;
         off = off1;
         RecordData::PTR(name)
       }
-      RecordType::SRV => {
+      ResourceType::Srv => {
         if off + 6 > len {
           return Err(ProtoError::NotEnoughData);
         }
@@ -179,7 +178,7 @@ impl Record {
           target,
         }
       }
-      RecordType::TXT => {
+      ResourceType::Txt => {
         let (txt, off1) = TXT::decode_strings(src, off)?;
         off = off1;
         RecordData::TXT(match txt.into_inner() {
