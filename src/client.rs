@@ -13,15 +13,17 @@ use std::{
 use agnostic_net::{runtime::RuntimeLite, Net, UdpSocket};
 use async_channel::{Receiver, Sender};
 use atomic_refcell::AtomicRefCell;
+use dns_protocol::{Question, ResourceRecord};
 use futures::{FutureExt, Stream};
 use iprobe::{ipv4, ipv6};
+use smallvec_wrapper::TinyVec;
 use smol_str::SmolStr;
 use triomphe::Arc;
 
 use crate::{
-  types::{Message, Name, Query, RecordData},
+  types::{Header, Name, Query, RecordData},
   utils::{multicast_udp4_socket, multicast_udp6_socket, unicast_udp4_socket, unicast_udp6_socket},
-  IPV4_MDNS, IPV6_MDNS, MAX_PAYLOAD_SIZE, MDNS_PORT,
+  IPV4_MDNS, IPV6_MDNS, MAX_INLINE_PACKET_SIZE, MAX_PAYLOAD_SIZE, MDNS_PORT,
 };
 
 /// Returned after we query for a service.
@@ -814,18 +816,19 @@ impl<N: Net> Client<N> {
   }
 
   async fn send_query(&self, question: Query) -> io::Result<()> {
-    let buf = question
-      .encode()
+    let mut buf = [0; MAX_INLINE_PACKET_SIZE];
+    let size = question
+      .encode(&mut buf)
       .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
 
     if let Some((addr, conn)) = &self.ipv4_unicast_conn {
-      tracing::trace!(from=%addr, data=?buf.as_slice(), "mdns client: sending query by unicast on IPv4");
-      conn.send_to(&buf, (IPV4_MDNS, MDNS_PORT)).await?;
+      tracing::trace!(from=%addr, data=?&buf[..size], "mdns client: sending query by unicast on IPv4");
+      conn.send_to(&buf[..size], (IPV4_MDNS, MDNS_PORT)).await?;
     }
 
     if let Some((addr, conn)) = &self.ipv6_unicast_conn {
-      tracing::trace!(from=%addr, data=?buf.as_slice(), "mdns client: sending query by unicast on IPv6");
-      conn.send_to(&buf, (IPV6_MDNS, MDNS_PORT)).await?;
+      tracing::trace!(from=%addr, data=?&buf[..size], "mdns client: sending query by unicast on IPv6");
+      conn.send_to(&buf[..size], (IPV6_MDNS, MDNS_PORT)).await?;
     }
 
     Ok(())
@@ -987,7 +990,34 @@ where
             let data = &buf[..size];
             tracing::trace!(local_addr=%self.local_addr, from=%src, multicast=%self.multicast, data=?data, "mdns client: received packet");
 
-            let msg = match Message::decode(data) {
+            let header = match Header::decode(data) {
+              Ok(header) => header,
+              Err(e) => {
+                tracing::error!(local_addr=%self.local_addr, from=%src, multicast=%self.multicast, err=%e, "mdns client: failed to decode packet");
+                return ControlFlow::Continue(());
+              }
+            };
+
+            let mut questions = (0..header.qdcount as usize)
+              .map(|_| Question::default())
+              .collect::<TinyVec<_>>();
+            let mut answers = (0..header.ancount as usize)
+              .map(|_| ResourceRecord::default())
+              .collect::<TinyVec<_>>();
+            let mut authorities = (0..header.nscount as usize)
+              .map(|_| ResourceRecord::default())
+              .collect::<TinyVec<_>>();
+            let mut additionals = (0..header.arcount as usize)
+              .map(|_| ResourceRecord::default())
+              .collect::<TinyVec<_>>();
+
+            let msg = match dns_protocol::Message::read(
+              data,
+              &mut questions,
+              &mut answers,
+              &mut authorities,
+              &mut additionals,
+            ) {
               Ok(msg) => msg,
               Err(e) => {
                 tracing::error!(local_addr=%self.local_addr, from=%src, multicast=%self.multicast, err=%e, "mdns client: failed to deserialize packet");

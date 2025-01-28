@@ -12,14 +12,12 @@ mod record_type;
 mod srv;
 
 pub use name::Name;
-pub use record::{Record, RecordHeader};
-pub use record_data::RecordData;
+pub use record::{RecordHeader, RecordRef};
+pub use record_data::{RecordDataRef, A, AAAA, PTR, SRV, TXT};
 pub use record_type::{RecordType, UnknownRecordTypeStr};
 pub use smallvec_wrapper::{OneOrMore, TinyVec};
-pub use srv::SRV;
 
-pub(crate) use answer::Answer;
-pub(crate) use message::Message;
+pub(crate) use message::Header;
 pub(crate) use query::Query;
 
 const MAX_COMPRESSION_OFFSET: usize = 2 << 13;
@@ -36,6 +34,8 @@ const MAX_DOMAIN_NAME_WIRE_OCTETS: usize = 255;
 /// not something a well written implementation should ever do, so we leave them
 /// to trip the maximum compression pointer check.
 const MAX_COMPRESSION_POINTERS: usize = (MAX_DOMAIN_NAME_WIRE_OCTETS + 1) / 2 - 2;
+
+const DNS_CLASS_IN: u16 = 1;
 
 const COMPRESSION_POINTER_MASK: u16 = 0xC000;
 const MESSAGE_HEADER_SIZE: usize = 12;
@@ -122,8 +122,8 @@ pub(crate) enum ProtoError {
   #[error("not enough data to decode")]
   NotEnoughData,
   /// Domain name is too long
-  #[error("domain name exceeds maximum length {length} bytes", length = MAX_DOMAIN_NAME_WIRE_OCTETS)]
-  LongDomain,
+  #[error("name exceeds maximum length {length} bytes", length = MAX_DOMAIN_NAME_WIRE_OCTETS)]
+  NameTooLong,
   /// Too many pointers
   #[error("too many compression pointers")]
   TooManyPointers,

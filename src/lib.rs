@@ -1,5 +1,5 @@
 #![doc = include_str!("../README.md")]
-#![forbid(unsafe_code)]
+// #![forbid(unsafe_code)]
 #![deny(missing_docs)]
 #![allow(unexpected_cfgs)]
 #![cfg_attr(docsrs, feature(doc_cfg))]
@@ -17,9 +17,12 @@ use std::{
 
 const IPV4_MDNS: Ipv4Addr = Ipv4Addr::new(224, 0, 0, 251);
 const IPV6_MDNS: Ipv6Addr = Ipv6Addr::new(0xff02, 0, 0, 0, 0, 0, 0, 0xfb);
+const IPV4_SIZE: usize = core::mem::size_of::<Ipv4Addr>();
+const IPV6_SIZE: usize = core::mem::size_of::<Ipv6Addr>();
 const MDNS_PORT: u16 = 5353;
 // See RFC 6762, https://datatracker.ietf.org/doc/rfc6762/
 const MAX_PAYLOAD_SIZE: usize = 9000;
+const MAX_INLINE_PACKET_SIZE: usize = 512;
 
 /// mDNS client
 mod client;
@@ -208,4 +211,11 @@ where
   E: Into<Box<dyn std::error::Error + Send + Sync>>,
 {
   io::Error::new(io::ErrorKind::InvalidInput, e)
+}
+
+fn invalid_data_err<E>(e: E) -> io::Error
+where
+  E: Into<Box<dyn std::error::Error + Send + Sync>>,
+{
+  io::Error::new(io::ErrorKind::InvalidData, e)
 }

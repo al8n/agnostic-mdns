@@ -7,19 +7,22 @@ use agnostic_net::{
 };
 use async_channel::{Receiver, Sender};
 use atomic_refcell::AtomicRefCell;
-use either::Either;
+use dns_protocol::{Flags, Message, Opcode, Question, ResourceRecord, ResponseCode, Serialize};
 use futures::{stream::FuturesUnordered, FutureExt, StreamExt as _};
 use iprobe::{ipv4, ipv6};
-use smallvec_wrapper::{MediumVec, OneOrMore};
+use smallvec_wrapper::TinyVec;
 use triomphe::Arc;
 
+use crate::invalid_data_err;
+
 use super::{
-  types::{Answer, Message, ProtoError, Query, Record, OP_CODE_QUERY, RESPONSE_CODE_NO_ERROR},
+  types::RecordRef,
   utils::{multicast_udp4_socket, multicast_udp6_socket},
-  Zone, MAX_PAYLOAD_SIZE, MDNS_PORT,
+  Zone, MAX_INLINE_PACKET_SIZE, MAX_PAYLOAD_SIZE, MDNS_PORT,
 };
 
 const FORCE_UNICAST_RESPONSES: bool = false;
+const RECORD_BUFSIZE: usize = 16;
 
 /// The options for [`Server`].
 #[derive(Clone, Debug)]
@@ -324,7 +327,19 @@ where
 
             let data = &buf[..len];
             tracing::trace!(from=%addr, data=?data, "mdns server: received packet");
-            let msg = match Message::decode(data) {
+
+            let mut q_buf = [Question::default(); 1];
+            let mut answers = [ResourceRecord::default(); RECORD_BUFSIZE];
+            let mut authorities = [ResourceRecord::default(); RECORD_BUFSIZE];
+            let mut additional = [ResourceRecord::default(); RECORD_BUFSIZE];
+
+            let msg = match dns_protocol::Message::read(
+              data,
+              &mut q_buf,
+              &mut answers,
+              &mut authorities,
+              &mut additional,
+            ) {
               Ok(msg) => msg,
               Err(e) => {
                 tracing::error!(from=%addr, err=%e, "mdns server: failed to deserialize packet");
@@ -354,21 +369,23 @@ where
     }
   }
 
-  async fn handle_query(&self, from: SocketAddr, query: Message) {
-    if query.header.opcode != OP_CODE_QUERY {
+  async fn handle_query(&self, from: SocketAddr, query: dns_protocol::Message<'_, '_>) {
+    let opcode = query.flags().opcode();
+    if opcode != Opcode::Query {
       // "In both multicast query and multicast response messages, the OPCODE MUST
       // be zero on transmission (only standard queries are currently supported
       // over multicast).  Multicast DNS messages received with an OPCODE other
       // than zero MUST be silently ignored."  Note: OpcodeQuery == 0
-      tracing::error!(opcode = %query.header.opcode, "mdns server: received query with non-zero OpCode");
+      tracing::error!(opcode = ?opcode, "mdns server: received query with non-zero OpCode");
       return;
     }
 
-    if query.header.response_code != RESPONSE_CODE_NO_ERROR {
+    let resp_code = query.flags().response_code();
+    if resp_code != ResponseCode::NoError {
       // "In both multicast query and multicast response messages, the Response
       // Code MUST be zero on transmission.  Multicast DNS messages received with
       // non-zero Response Codes MUST be silently ignored."
-      tracing::error!(rcode = %query.header.response_code, "mdns server: received query with non-zero response_code");
+      tracing::error!(rcode = ?resp_code, "mdns server: received query with non-zero response_code");
       return;
     }
 
@@ -378,81 +395,73 @@ where
     //    record this fact, and wait for those additional Known-Answer records,
     //    before deciding whether to respond.  If the TC bit is clear, it means
     //    that the querying host has no additional Known Answers.
-    if query.header.truncated {
+    if query.flags().truncated() {
       tracing::error!(
         "mdns server: support for DNS requests with high truncated bit not implemented"
       );
       return;
     }
 
-    let mut multicast_answers = OneOrMore::new();
-    let mut unicast_answers = OneOrMore::new();
+    let mut multicast_answers = TinyVec::new();
+    let mut unicast_answers = TinyVec::new();
 
     // Handle each query
-    let queries = query.queries();
+    let queries = query.questions();
     for query in queries {
-      match self.handle_query_message(query).await {
-        Ok((mrecs, urecs)) => {
-          multicast_answers.extend(mrecs);
-          unicast_answers.extend(urecs)
-        }
+      match self
+        .handle_query_message(*query, &mut multicast_answers, &mut unicast_answers)
+        .await
+      {
+        Ok(()) => {}
         Err(e) => {
           // query=%query,
-          tracing::error!(err=%e, "mdns server: fail to handle query");
+          tracing::error!(query=?query, err=%e, "mdns server: fail to handle query");
         }
       }
     }
 
     if self.log_empty_responses && multicast_answers.is_empty() && unicast_answers.is_empty() {
-      let mut questions = MediumVec::with_capacity(queries.len());
+      // let mut questions = MediumVec::with_capacity(queries.len());
 
-      for query in queries {
-        questions.push(query.name().as_str());
-      }
+      // for query in queries {
+      //   questions.push(query.name().as_str());
+      // }
 
-      tracing::info!(
-        "mdns server: no responses for query with questions: {}",
-        questions.join(", ")
-      );
-    }
-    // See section 18 of RFC 6762 for rules about DNS headers.
-    let resp = |answers: OneOrMore<Record>, unicast: bool| -> Option<Answer> {
-      // 18.1: ID (Query Identifier)
-      // 0 for multicast response, query.Id for unicast response
-      let mut id = 0;
-      if unicast {
-        id = query.id();
-      }
-
-      if answers.is_empty() {
-        return None;
-      }
-
-      Some(Answer::new(id, answers))
-    };
-
-    if let Some(mresp) = resp(multicast_answers, false) {
-      if let Err(e) = self.send_response(mresp, from, false).await {
-        tracing::error!(err=%e, "mdns server: error sending multicast response");
-        return;
-      }
+      // tracing::info!(
+      //   "mdns server: no responses for query with questions: {}",
+      //   queries.iter().map(|question| {
+      //     question.name().names()
+      //   }).flatten().join(", ")
+      // );
+      // TODO: Add logging for queries
     }
 
-    if let Some(uresp) = resp(unicast_answers, true) {
-      if let Err(e) = self.send_response(uresp, from, true).await {
-        tracing::error!(err=%e, "mdns server: error sending unicast response");
-      }
+    if let Err(e) = self
+      .send_response(query.id(), from, false, &multicast_answers)
+      .await
+    {
+      tracing::error!(err=%e, "mdns server: error sending multicast response");
+      return;
+    }
+
+    if let Err(e) = self
+      .send_response(query.id(), from, true, &multicast_answers)
+      .await
+    {
+      tracing::error!(err=%e, "mdns server: error sending unicast response");
     }
   }
 
-  async fn handle_query_message(
-    &self,
-    query: &Query,
-  ) -> Result<(OneOrMore<Record>, OneOrMore<Record>), Z::Error> {
-    let records = self.zone.records(query.name(), query.query_type()).await?;
+  async fn handle_query_message<'a>(
+    &'a self,
+    question: Question<'a>,
+    mrecs: &mut TinyVec<RecordRef<'a>>,
+    urecs: &mut TinyVec<RecordRef<'a>>,
+  ) -> Result<(), Z::Error> {
+    let records = self.zone.records(question.name(), question.ty()).await?;
 
     if records.is_empty() {
-      return Ok((OneOrMore::new(), OneOrMore::new()));
+      return Ok(());
     }
 
     // Handle unicast and multicast responses.
@@ -466,25 +475,85 @@ where
     //     In the Query Section of a Multicast DNS query, the top bit of the
     //     qclass field is used to indicate that unicast responses are preferred
     //     for this particular question.  (See Section 5.4.)
-    let qc: u16 = query.query_class().into();
-    let res = if (qc & (1 << 15)) != 0 || FORCE_UNICAST_RESPONSES {
-      (OneOrMore::new(), records)
+    let qc = question.class();
+    if (qc & (1 << 15)) != 0 || FORCE_UNICAST_RESPONSES {
+      urecs.extend(records);
     } else {
-      (records, OneOrMore::new())
-    };
+      mrecs.extend(records);
+    }
 
-    Ok(res)
+    Ok(())
   }
 
-  async fn send_response(
-    &self,
-    msg: Answer,
+  async fn send_response<'a>(
+    &'a self,
+    qid: u16,
     from: SocketAddr,
-    _unicast: bool,
-  ) -> Result<usize, Either<ProtoError, io::Error>> {
+    unicast: bool,
+    records: &[RecordRef<'a>],
+  ) -> Result<usize, io::Error> {
+    // 18.1: ID (Query Identifier)
+    // 0 for multicast response, query.Id for unicast response
+    let mut id = 0;
+    if unicast {
+      id = qid;
+    }
+
+    if records.is_empty() {
+      return Ok(0);
+    }
+
+    // See section 18 of RFC 6762 for rules about DNS headers.
+
+    let mut flag = Flags::new();
+    flag
+      .set_response_code(ResponseCode::NoError)
+      .set_authoritative(true);
+
+    let mut records: TinyVec<ResourceRecord<'a>> = records.iter().map(Into::into).collect();
+    let msg = Message::new(id, flag, &mut [], &mut records, &mut [], &mut []);
+    let len = msg.serialized_len();
+
+    let mut buf = Buffer::from(len);
+    let written = msg.write(&mut buf).map_err(invalid_data_err)?;
+
     // TODO(reddaly): Respect the unicast argument, and allow sending responses
     // over multicast.
-    let data = msg.encode().map_err(Either::Left)?;
-    self.conn.send_to(&data, from).await.map_err(Either::Right)
+    self.conn.send_to(&buf[..written], from).await
+  }
+}
+
+enum Buffer {
+  Heap(Vec<u8>),
+  Stack([u8; MAX_INLINE_PACKET_SIZE]),
+}
+
+impl From<usize> for Buffer {
+  fn from(size: usize) -> Self {
+    if size <= MAX_INLINE_PACKET_SIZE {
+      Buffer::Stack([0; MAX_INLINE_PACKET_SIZE])
+    } else {
+      Buffer::Heap(vec![0; size])
+    }
+  }
+}
+
+impl core::ops::Deref for Buffer {
+  type Target = [u8];
+
+  fn deref(&self) -> &[u8] {
+    match self {
+      Buffer::Heap(v) => v,
+      Buffer::Stack(v) => v,
+    }
+  }
+}
+
+impl core::ops::DerefMut for Buffer {
+  fn deref_mut(&mut self) -> &mut [u8] {
+    match self {
+      Buffer::Heap(v) => v,
+      Buffer::Stack(v) => v,
+    }
   }
 }

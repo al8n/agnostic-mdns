@@ -22,6 +22,12 @@ pub struct Name {
   fqdn: bool,
 }
 
+impl From<Name> for SmolStr {
+  fn from(name: Name) -> Self {
+    name.name
+  }
+}
+
 impl PartialEq for Name {
   fn eq(&self, other: &Self) -> bool {
     self.name == other.name
@@ -194,6 +200,12 @@ impl Name {
     &self.name
   }
 
+  /// Returns the `SmolStr` representation of the name.
+  #[inline]
+  pub const fn as_smolstr(&self) -> &SmolStr {
+    &self.name
+  }
+
   /// Appends a name to the current name
   pub(crate) fn append(&self, other: &Name) -> Self {
     let name = format_smolstr!("{}{}", self.name.as_str(), other.name.as_str());
@@ -298,7 +310,7 @@ impl Name {
 
           budget -= (label_len as isize) + 1; // +1 for the label separator
           if budget <= 0 {
-            return Err(ProtoError::LongDomain);
+            return Err(ProtoError::NameTooLong);
           }
 
           for &b in msg[off..off + label_len].iter() {
@@ -753,7 +765,7 @@ mod tests {
     let input = b"6xabcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ01abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVW1abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVW1abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVW1abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVW";
 
     let name = Name::decode(input, 0).unwrap_err();
-    assert_eq!(name, ProtoError::LongDomain);
+    assert_eq!(name, ProtoError::NameTooLong);
   }
 
   #[test]
@@ -767,7 +779,7 @@ mod tests {
     ];
 
     let err = Name::decode(&input, 0).unwrap_err();
-    assert_eq!(err, ProtoError::LongDomain);
+    assert_eq!(err, ProtoError::NameTooLong);
   }
 
   #[test]
@@ -829,7 +841,7 @@ mod tests {
       0x04,
     ];
     let err = Name::decode(&input, 0).unwrap_err();
-    assert_eq!(err, ProtoError::LongDomain);
+    assert_eq!(err, ProtoError::NameTooLong);
   }
 
   #[test]
