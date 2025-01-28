@@ -29,21 +29,21 @@ Async runtime agnostic, simple and lightweight mDNS client/server library in Rus
 
   ```toml
   [dependencies]
-  agnostic-mdns = { version = "0.1", features = ["tokio"] }
+  agnostic-mdns = { version = "0.2", features = ["tokio"] }
   ```
 
 - `async-std`
   
   ```toml
   [dependencies]
-  agnostic-mdns = { version = "0.1", features = ["async-std"] }
+  agnostic-mdns = { version = "0.2", features = ["async-std"] }
   ```
 
 - `smol`
   
   ```toml
   [dependencies]
-  agnostic-mdns = { version = "0.1", features = ["smol"] }
+  agnostic-mdns = { version = "0.2", features = ["smol"] }
   ```
 
 ## Examples

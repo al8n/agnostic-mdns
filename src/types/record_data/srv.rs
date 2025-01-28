@@ -1,13 +1,14 @@
-// The code in this file is copy from https://github.com/hickory-dns/hickory-dns/blob/main/crates/proto/src/rr/rdata/srv.rs
-//
-// Copyright 2015-2023 Benjamin Fry <benjaminfry@me.com>
-//
-// The original code is licensed under the Apache License, Version 2.0, <LICENSE-APACHE or
-// https://apache.org/licenses/LICENSE-2.0> or the MIT license <LICENSE-MIT or
-// https://opensource.org/licenses/MIT>, at your option. This file may not be
-// copied, modified, or distributed except according to those terms.
+use std::{
+  ops::{Range, RangeFrom},
+  sync::atomic::{AtomicU16, Ordering},
+};
 
-use super::Name;
+use smol_str::SmolStr;
+use triomphe::Arc;
+
+use dns_protocol::{Label, ResourceRecord, ResourceType, Serialize};
+
+use crate::ProtoError;
 
 /// [RFC 2782, DNS SRV RR, February 2000](https://tools.ietf.org/html/rfc2782)
 ///
@@ -73,22 +74,66 @@ use super::Name;
 #[derive(Debug, PartialEq, Eq, Hash, Clone)]
 #[allow(clippy::upper_case_acronyms)]
 pub struct SRV {
-  priority: u16,
-  weight: u16,
-  port: u16,
-  target: Name,
+  data: Arc<[u8]>,
+  target: SmolStr,
 }
 
 impl SRV {
+  const PRIORITY_OFFSET: usize = 0;
+  const WEIGHT_OFFSET: usize = 2;
+  const PORT_OFFSET: usize = 4;
+  const TARGET_OFFSET: usize = 6;
+
+  const PRIORITY_END: usize = 2;
+  const WEIGHT_END: usize = 4;
+  const PORT_END: usize = 6;
+
+  const PRIORITY_RANGE: Range<usize> = Self::PRIORITY_OFFSET..Self::PRIORITY_END;
+  const WEIGHT_RANGE: Range<usize> = Self::WEIGHT_OFFSET..Self::WEIGHT_END;
+  const PORT_RANGE: Range<usize> = Self::PORT_OFFSET..Self::PORT_END;
+  const TARGET_RANGE: RangeFrom<usize> = Self::TARGET_OFFSET..;
+
   /// Creates a new SRV record data.
   #[inline]
-  pub const fn new(priority: u16, weight: u16, port: u16, target: Name) -> Self {
-    Self {
-      priority,
-      weight,
-      port,
-      target,
-    }
+  pub fn new(priority: u16, weight: u16, port: u16, target: SmolStr) -> Result<Self, ProtoError> {
+    let label = Label::from(target.as_str());
+    let len = label.serialized_len();
+    let mut buf = vec![0; Self::TARGET_OFFSET + len];
+    buf[Self::PRIORITY_RANGE].copy_from_slice(priority.to_be_bytes().as_ref());
+    buf[Self::WEIGHT_RANGE].copy_from_slice(weight.to_be_bytes().as_ref());
+    buf[Self::PORT_RANGE].copy_from_slice(port.to_be_bytes().as_ref());
+    label
+      .serialize(&mut buf[Self::TARGET_RANGE])
+      .map_err(|_| ProtoError::NameTooLong)
+      .map(|size| {
+        buf.truncate(Self::TARGET_OFFSET + size);
+        Self {
+          data: Arc::from(buf),
+          target,
+        }
+      })
+  }
+
+  /// Returns the bytes format of the SRV record data.
+  ///
+  /// The result is the encoded bytes of the SRV record data.
+  ///
+  /// This operation is O(1).
+  #[inline]
+  pub fn data(&self) -> &[u8] {
+    &self.data
+  }
+
+  /// Returns a resource record from the `SRV`.
+  #[inline]
+  pub fn to_resource_record<'a>(
+    &'a self,
+    name: &'a str,
+    ty: ResourceType,
+    class: u16,
+    ttl: u32,
+  ) -> ResourceRecord<'a> {
+    ResourceRecord::new(name, ty, class, ttl, self.data())
   }
 
   /// ```text
@@ -100,8 +145,9 @@ impl SRV {
   /// is a 16 bit unsigned integer in network byte order.
   /// ```
   #[inline]
-  pub const fn priority(&self) -> u16 {
-    self.priority
+  pub fn priority(&self) -> u16 {
+    let val = unsafe { &*(self.data[Self::PRIORITY_RANGE].as_ptr() as *const AtomicU16) };
+    u16::from_be(val.load(Ordering::Acquire))
   }
 
   /// ```text
@@ -142,8 +188,9 @@ impl SRV {
   /// Priority.
   /// ```
   #[inline]
-  pub const fn weight(&self) -> u16 {
-    self.weight
+  pub fn weight(&self) -> u16 {
+    let val = unsafe { &*(self.data[Self::WEIGHT_RANGE].as_ptr() as *const AtomicU16) };
+    u16::from_be(val.load(Ordering::Acquire))
   }
 
   /// ```text
@@ -154,8 +201,36 @@ impl SRV {
   ///
   /// ```
   #[inline]
-  pub const fn port(&self) -> u16 {
-    self.port
+  pub fn port(&self) -> u16 {
+    let val = unsafe { &*(self.data[Self::PORT_RANGE].as_ptr() as *const AtomicU16) };
+    u16::from_be(val.load(Ordering::Acquire))
+  }
+
+  /// Sets the priority of the SRV record data.
+  ///
+  /// See [`priority`](#method.priority) for more information.
+  #[inline]
+  pub fn update_priority(&self, val: u16) {
+    let priority = unsafe { &*(self.data[Self::PRIORITY_RANGE].as_ptr() as *const AtomicU16) };
+    priority.store(val.to_be(), Ordering::Release);
+  }
+
+  /// Sets the weight of the SRV record data.
+  ///
+  /// See [`weight`](#method.weight) for more information.
+  #[inline]
+  pub fn update_weight(&self, val: u16) {
+    let weight = unsafe { &*(self.data[Self::WEIGHT_RANGE].as_ptr() as *const AtomicU16) };
+    weight.store(val.to_be(), Ordering::Release);
+  }
+
+  /// Updates the port of the SRV record data.
+  ///
+  /// See [`port`](#method.port) for more information.
+  #[inline]
+  pub fn set_port(&self, val: u16) {
+    let port = unsafe { &*(self.data[Self::PORT_RANGE].as_ptr() as *const AtomicU16) };
+    port.store(val.to_be(), Ordering::Release);
   }
 
   /// ```text
@@ -171,13 +246,7 @@ impl SRV {
   /// available at this domain.
   /// ```
   #[inline]
-  pub const fn target(&self) -> &Name {
+  pub fn target(&self) -> &str {
     &self.target
-  }
-
-  /// Consumes the SRV record data and returns the target.
-  #[inline]
-  pub fn into_target(self) -> Name {
-    self.target
   }
 }
