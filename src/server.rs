@@ -421,19 +421,14 @@ where
     }
 
     if self.log_empty_responses && multicast_answers.is_empty() && unicast_answers.is_empty() {
-      // let mut questions = MediumVec::with_capacity(queries.len());
-
-      // for query in queries {
-      //   questions.push(query.name().as_str());
-      // }
-
-      // tracing::info!(
-      //   "mdns server: no responses for query with questions: {}",
-      //   queries.iter().map(|question| {
-      //     question.name().names()
-      //   }).flatten().join(", ")
-      // );
-      // TODO: Add logging for queries
+      for query in queries {
+        tracing::info!(
+          class=%query.class(),
+          type=?query.ty(),
+          name=%query.name(),
+          "mdns server: no responses for query with question",
+        );
+      }
     }
 
     if let Err(e) = self
@@ -514,15 +509,23 @@ where
     let msg = Message::new(id, flag, &mut [], &mut records, &mut [], &mut []);
     let len = msg.serialized_len();
 
-    let mut buf = Buffer::from(len);
-    let written = msg.write(&mut buf).map_err(invalid_data_err)?;
-
-    // TODO(reddaly): Respect the unicast argument, and allow sending responses
-    // over multicast.
-    self.conn.send_to(&buf[..written], from).await
+    if len <= MAX_INLINE_PACKET_SIZE {
+      let mut buf = [0; MAX_INLINE_PACKET_SIZE];
+      let written = msg.write(&mut buf).map_err(invalid_data_err)?;
+      // TODO(reddaly): Respect the unicast argument, and allow sending responses
+      // over multicast.
+      self.conn.send_to(&buf[..written], from).await
+    } else {
+      let mut buf = vec![0; len];
+      msg.write(&mut buf).map_err(invalid_data_err)?;
+      // TODO(reddaly): Respect the unicast argument, and allow sending responses
+      // over multicast.
+      self.conn.send_to(&buf, from).await
+    }
   }
 }
 
+#[allow(clippy::large_enum_variant)]
 enum Buffer {
   Heap(Vec<u8>),
   Stack([u8; MAX_INLINE_PACKET_SIZE]),

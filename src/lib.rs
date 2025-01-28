@@ -33,10 +33,9 @@ mod server;
 pub use server::*;
 
 mod types;
-use smol_str::format_smolstr;
 
 pub use iprobe as netprobe;
-pub use smol_str::SmolStr;
+pub use smol_str::{format_smolstr, SmolStr};
 pub use types::*;
 
 /// Types for `tokio` runtime
@@ -45,9 +44,9 @@ pub use types::*;
 pub mod tokio {
   use std::io;
 
+  use super::{Lookup, QueryParam};
   pub use agnostic_net::{runtime::tokio::TokioRuntime as Runtime, tokio::Net};
-
-  use super::{Lookup, Name, QueryParam};
+  use smol_str::SmolStr;
 
   /// A service that can be used with `tokio` runtime
   pub type Service = super::Service<Runtime>;
@@ -67,7 +66,7 @@ pub mod tokio {
 
   /// Similar to [`query_with`], however it uses all the default parameters
   #[inline]
-  pub async fn lookup(service: Name) -> io::Result<Lookup> {
+  pub async fn lookup(service: SmolStr) -> io::Result<Lookup> {
     query_with(QueryParam::new(service)).await
   }
 }
@@ -76,10 +75,11 @@ pub mod tokio {
 #[cfg(feature = "smol")]
 #[cfg_attr(docsrs, doc(cfg(feature = "smol")))]
 pub mod smol {
-  use super::{Lookup, Name, QueryParam};
+  use super::{Lookup, QueryParam};
   use std::io;
 
   pub use agnostic_net::{runtime::smol::SmolRuntime as Runtime, smol::Net};
+  use smol_str::SmolStr;
 
   /// A service that can be used with `smol` runtime
   pub type Service = super::Service<Runtime>;
@@ -99,7 +99,7 @@ pub mod smol {
 
   /// Similar to [`query_with`], however it uses all the default parameters
   #[inline]
-  pub async fn lookup(service: Name) -> io::Result<Lookup> {
+  pub async fn lookup(service: SmolStr) -> io::Result<Lookup> {
     query_with(QueryParam::new(service)).await
   }
 }
@@ -108,10 +108,11 @@ pub mod smol {
 #[cfg(feature = "async-std")]
 #[cfg_attr(docsrs, doc(cfg(feature = "async-std")))]
 pub mod async_std {
-  use super::{Lookup, Name, QueryParam};
+  use super::{Lookup, QueryParam};
   use std::io;
 
   pub use agnostic_net::{async_std::Net, runtime::async_std::AsyncStdRuntime as Runtime};
+  use smol_str::SmolStr;
 
   /// A service that can be used with `async-std` runtime
   pub type Service = super::Service<Runtime>;
@@ -131,7 +132,7 @@ pub mod async_std {
 
   /// Similar to [`query_with`], however it uses all the default parameters
   #[inline]
-  pub async fn lookup(service: Name) -> io::Result<Lookup> {
+  pub async fn lookup(service: SmolStr) -> io::Result<Lookup> {
     query_with(QueryParam::new(service)).await
   }
 }
@@ -218,4 +219,24 @@ where
   E: Into<Box<dyn std::error::Error + Send + Sync>>,
 {
   io::Error::new(io::ErrorKind::InvalidData, e)
+}
+
+/// Returns `true` if a domain name is fully qualified domain name
+#[inline]
+pub fn is_fqdn(s: &str) -> bool {
+  let len = s.len();
+  if s.is_empty() || !s.ends_with('.') {
+    return false;
+  }
+
+  let s = &s[..len - 1];
+
+  if s.is_empty() || !s.ends_with('\\') {
+    return true;
+  }
+
+  // Count backslashes at the end
+  let last_non_backslash = s.rfind(|c| c != '\\').unwrap_or(0);
+
+  (len - last_non_backslash) % 2 == 0
 }

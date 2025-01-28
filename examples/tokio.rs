@@ -3,7 +3,7 @@ use std::time::Duration;
 use agnostic_mdns::{
   hostname,
   tokio::{query_with, Server},
-  Name, QueryParam, ServerOptions, ServiceBuilder, SmolStr,
+  QueryParam, ServerOptions, ServiceBuilder, SmolStr,
 };
 use futures::StreamExt;
 
@@ -24,7 +24,7 @@ async fn main() {
     .await
     .unwrap();
 
-  let params = QueryParam::new(Name::from("_foobar._tcp"))
+  let params = QueryParam::new("_foobar._tcp".into())
     .with_timeout(Duration::from_millis(50))
     .with_disable_ipv6(true);
 

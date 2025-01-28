@@ -6,9 +6,10 @@ use std::{
   sync::atomic::{AtomicU32, Ordering},
 };
 
-use crate::{invalid_input_err, A, AAAA, PTR, TXT};
-
-use super::types::{Name, RecordDataRef, RecordRef, SRV};
+use super::{
+  invalid_input_err, is_fqdn,
+  types::{Name, RecordDataRef, RecordRef, A, AAAA, PTR, SRV, TXT},
+};
 use agnostic_net::runtime::RuntimeLite;
 use dns_protocol::{Label, ResourceType};
 use either::Either;
@@ -17,7 +18,6 @@ use smol_str::{format_smolstr, SmolStr};
 use triomphe::Arc;
 
 const DEFAULT_TTL: u32 = 120;
-const DNS_CLASS_IN: u16 = 1;
 
 /// The error of the service
 #[derive(Debug, thiserror::Error)]
@@ -29,14 +29,14 @@ pub enum ServiceError {
   #[error("could not determine the host ip addresses for {hostname}: {error}")]
   IpNotFound {
     /// the host name
-    hostname: Name,
+    hostname: SmolStr,
     /// the error
     #[source]
     error: Box<dyn Error + Send + Sync + 'static>,
   },
   /// Not a fully qualified domain name
   #[error("{0} is not a fully qualified domain name")]
-  NotFQDN(Name),
+  NotFQDN(SmolStr),
 }
 
 /// The interface used to integrate with the server and
@@ -81,8 +81,8 @@ auto_impl!(std::sync::Arc<Z>, triomphe::Arc<Z>, std::boxed::Box<Z>,);
 pub struct ServiceBuilder {
   instance: SmolStr,
   service: SmolStr,
-  domain: Option<Name>,
-  hostname: Option<Name>,
+  domain: Option<SmolStr>,
+  hostname: Option<SmolStr>,
   port: Option<u16>,
   ipv4s: TinyVec<A>,
   ipv6s: TinyVec<AAAA>,
@@ -143,13 +143,13 @@ impl ServiceBuilder {
   /// ## Example
   ///
   /// ```rust
-  /// use agnostic_mdns::{Name, ServiceBuilder};
+  /// use agnostic_mdns::ServiceBuilder;
   ///
   /// let builder = ServiceBuilder::new("hostname".into(), "_http._tcp".into());
   ///
   /// assert!(builder.domain().is_none());
   /// ```
-  pub fn domain(&self) -> Option<&Name> {
+  pub fn domain(&self) -> Option<&SmolStr> {
     self.domain.as_ref()
   }
 
@@ -158,14 +158,14 @@ impl ServiceBuilder {
   /// ## Example
   ///
   /// ```rust
-  /// use agnostic_mdns::{Name, ServiceBuilder};
+  /// use agnostic_mdns::ServiceBuilder;
   ///
   /// let builder = ServiceBuilder::new("hostname".into(), "_http._tcp".into())
-  ///   .with_domain(Name::from("local."));
+  ///   .with_domain("local.".into());
   ///
   /// assert_eq!(builder.domain().unwrap().as_str(), "local.");
   /// ```
-  pub fn with_domain(mut self, domain: Name) -> Self {
+  pub fn with_domain(mut self, domain: SmolStr) -> Self {
     self.domain = Some(domain);
     self
   }
@@ -175,14 +175,14 @@ impl ServiceBuilder {
   /// ## Example
   ///
   /// ```rust
-  /// use agnostic_mdns::{Name, ServiceBuilder};
+  /// use agnostic_mdns::ServiceBuilder;
   ///
   /// let builder = ServiceBuilder::new("hostname".into(), "_http._tcp".into())
-  ///   .with_hostname(Name::from("testhost."));
+  ///   .with_hostname("testhost.".into());
   ///
   /// assert_eq!(builder.hostname().unwrap().as_str(), "testhost.");
   /// ```
-  pub fn hostname(&self) -> Option<&Name> {
+  pub fn hostname(&self) -> Option<&SmolStr> {
     self.hostname.as_ref()
   }
 
@@ -191,12 +191,12 @@ impl ServiceBuilder {
   /// ## Example
   ///
   /// ```rust
-  /// use agnostic_mdns::{Name, ServiceBuilder};
+  /// use agnostic_mdns::ServiceBuilder;
   ///
   /// let builder = ServiceBuilder::new("hostname".into(), "_http._tcp".into())
-  ///   .with_hostname(Name::from("testhost."));
+  ///   .with_hostname("testhost.".into());
   /// ```
-  pub fn with_hostname(mut self, hostname: Name) -> Self {
+  pub fn with_hostname(mut self, hostname: SmolStr) -> Self {
     self.hostname = Some(hostname);
     self
   }
@@ -351,7 +351,7 @@ impl ServiceBuilder {
   ///
   /// let builder = builder.with_ip("192.168.0.1".parse().unwrap());
   ///
-  /// assert_eq!(builder.ipv4s(), &[IpAddr::V4("192.168.0.1".parse().unwrap())]);
+  /// assert_eq!(builder.ipv4s(), &["192.168.0.1".parse().unwrap()]);
   /// ```
   pub fn ipv4s(&self) -> &[A] {
     &self.ipv4s
@@ -370,7 +370,7 @@ impl ServiceBuilder {
   ///
   /// let builder = builder.with_ip("::1".parse().unwrap());
   ///
-  /// assert_eq!(builder.ipv6s(), &[IpAddr::V6("::1".parse().unwrap())]);
+  /// assert_eq!(builder.ipv6s(), &["::1".parse().unwrap()]);
   /// ```
   pub fn ipv6s(&self) -> &[AAAA] {
     &self.ipv6s
@@ -381,11 +381,10 @@ impl ServiceBuilder {
   /// ## Example
   ///
   /// ```rust
-  /// use agnostic_mdns::ServiceBuilder;
-  /// use std::net::IpAddr;
+  /// use agnostic_mdns::{A, ServiceBuilder};
   ///
   /// let builder = ServiceBuilder::new("hostname".into(), "_http._tcp".into())
-  ///   .with_ips([IpAddr::V4("192.168.0.1".parse().unwrap())].into_iter().collect());
+  ///   .with_ipv4s(["192.168.0.1".parse().unwrap()].into_iter().collect());
   /// ```
   pub fn with_ipv4s(mut self, ips: TinyVec<A>) -> Self {
     self.ipv4s = ips;
@@ -398,10 +397,9 @@ impl ServiceBuilder {
   ///
   /// ```rust
   /// use agnostic_mdns::ServiceBuilder;
-  /// use std::net::IpAddr;
   ///
   /// let builder = ServiceBuilder::new("hostname".into(), "_http._tcp".into())
-  ///   .with_ips([IpAddr::V6("::1".parse().unwrap())].into_iter().collect());
+  ///   .with_ipv6s(["::1".parse().unwrap()].into_iter().collect());
   /// ```
   pub fn with_ipv6s(mut self, ips: TinyVec<AAAA>) -> Self {
     self.ipv6s = ips;
@@ -486,7 +484,7 @@ impl ServiceBuilder {
     R: RuntimeLite,
   {
     let domain = match self.domain {
-      Some(domain) if !domain.is_fqdn() => {
+      Some(domain) if !is_fqdn(domain.as_str()) => {
         return Err(invalid_input_err(ServiceError::NotFQDN(domain)))
       }
       Some(domain) => domain,
@@ -494,13 +492,13 @@ impl ServiceBuilder {
     };
 
     let hostname = match self.hostname {
-      Some(hostname) if !hostname.as_str().is_empty() => {
-        if !hostname.is_fqdn() {
+      Some(hostname) if !hostname.is_empty() => {
+        if !is_fqdn(hostname.as_str()) {
           return Err(invalid_input_err(ServiceError::NotFQDN(hostname)));
         }
         hostname
       }
-      _ => Name::from_components(super::hostname_fqdn()?, true),
+      _ => super::hostname_fqdn()?,
     };
 
     let port = match self.port {
@@ -509,7 +507,7 @@ impl ServiceBuilder {
     };
 
     let (ipv4s, ipv6s) = if self.ipv4s.is_empty() && self.ipv6s.is_empty() {
-      let tmp_hostname = hostname.clone().append(&domain);
+      let tmp_hostname = Name::append(hostname.as_str(), domain.as_str());
 
       let mut ipv4s = TinyVec::new();
       let mut ipv6s = TinyVec::new();
@@ -548,13 +546,8 @@ impl ServiceBuilder {
       domain.as_str().trim_matches('.')
     );
 
-    let srv = SRV::new(
-      self.srv_priority,
-      self.srv_weight,
-      port,
-      hostname.as_smolstr().clone(),
-    )
-    .map_err(invalid_input_err)?;
+    let srv = SRV::new(self.srv_priority, self.srv_weight, port, hostname.clone())
+      .map_err(invalid_input_err)?;
 
     Ok(Service {
       instance: self.instance,
@@ -570,12 +563,9 @@ impl ServiceBuilder {
         Either::Right(ips) => Arc::from(ips),
       },
       txt: TXT::new(Arc::from_iter(self.txt)).map_err(invalid_input_err)?,
-      service_addr: PTR::new(Name::from_components(service_addr, true).into())
-        .map_err(invalid_input_err)?,
-      instance_addr: PTR::new(Name::from_components(instance_addr, true).into())
-        .map_err(invalid_input_err)?,
-      enum_addr: PTR::new(Name::from_components(enum_addr, true).into())
-        .map_err(invalid_input_err)?,
+      service_addr: PTR::new(service_addr).map_err(invalid_input_err)?,
+      instance_addr: PTR::new(instance_addr).map_err(invalid_input_err)?,
+      enum_addr: PTR::new(enum_addr).map_err(invalid_input_err)?,
       ttl: AtomicU32::new(self.ttl),
       srv,
       _r: PhantomData,
@@ -590,9 +580,9 @@ pub struct Service<R> {
   /// Service name (e.g. "_http._tcp.")
   service: SmolStr,
   /// If blank, assumes "local"
-  domain: Name,
+  domain: SmolStr,
   /// Host machine DNS name (e.g. "mymachine.net")
-  hostname: Name,
+  hostname: SmolStr,
   /// IP addresses for the service's host
   ipv4s: Arc<[A]>,
   ipv6s: Arc<[AAAA]>,
@@ -656,13 +646,13 @@ impl<R> Service<R> {
 
   /// Returns the domain of the mdns service.
   #[inline]
-  pub const fn domain(&self) -> &Name {
+  pub const fn domain(&self) -> &SmolStr {
     &self.domain
   }
 
   /// Returns the hostname of the mdns service.
   #[inline]
-  pub const fn hostname(&self) -> &Name {
+  pub const fn hostname(&self) -> &SmolStr {
     &self.hostname
   }
 

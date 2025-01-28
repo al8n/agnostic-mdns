@@ -13,15 +13,13 @@ use std::{
 use agnostic_net::{runtime::RuntimeLite, Net, UdpSocket};
 use async_channel::{Receiver, Sender};
 use atomic_refcell::AtomicRefCell;
-use dns_protocol::{Question, ResourceRecord};
 use futures::{FutureExt, Stream};
 use iprobe::{ipv4, ipv6};
-use smallvec_wrapper::TinyVec;
 use smol_str::SmolStr;
 use triomphe::Arc;
 
 use crate::{
-  types::{Header, Name, Query, RecordData},
+  types::{Message, Name, Query, RecordData},
   utils::{multicast_udp4_socket, multicast_udp6_socket, unicast_udp4_socket, unicast_udp6_socket},
   IPV4_MDNS, IPV6_MDNS, MAX_INLINE_PACKET_SIZE, MAX_PAYLOAD_SIZE, MDNS_PORT,
 };
@@ -29,8 +27,8 @@ use crate::{
 /// Returned after we query for a service.
 #[derive(Debug, Clone)]
 pub struct ServiceEntry {
-  name: Name,
-  host: Name,
+  name: SmolStr,
+  host: SmolStr,
   socket_v4: Option<SocketAddrV4>,
   socket_v6: Option<SocketAddrV6>,
   infos: Arc<[SmolStr]>,
@@ -39,13 +37,13 @@ pub struct ServiceEntry {
 impl ServiceEntry {
   /// Returns the name of the service.
   #[inline]
-  pub fn name(&self) -> &Name {
+  pub fn name(&self) -> &SmolStr {
     &self.name
   }
 
   /// Returns the host of the service.
   #[inline]
-  pub fn host(&self) -> &Name {
+  pub fn host(&self) -> &SmolStr {
     &self.host
   }
 
@@ -85,8 +83,8 @@ impl ServiceEntry {
 /// Returned after we query for a service.
 #[derive(Clone)]
 struct ServiceEntryBuilder {
-  name: Name,
-  host: Name,
+  name: SmolStr,
+  host: SmolStr,
   port: u16,
   ipv4: Option<Ipv4Addr>,
   ipv6: Option<Ipv6Addr>,
@@ -100,8 +98,8 @@ impl Default for ServiceEntryBuilder {
   #[inline]
   fn default() -> Self {
     Self {
-      name: Name::default(),
-      host: Name::default(),
+      name: SmolStr::default(),
+      host: SmolStr::default(),
       port: 0,
       ipv4: None,
       ipv6: None,
@@ -119,7 +117,7 @@ impl ServiceEntryBuilder {
   }
 
   #[inline]
-  fn with_name(mut self, name: Name) -> Self {
+  fn with_name(mut self, name: SmolStr) -> Self {
     self.name = name;
     self
   }
@@ -141,8 +139,8 @@ impl ServiceEntryBuilder {
 /// How a lookup is performed.
 #[derive(Clone, Debug)]
 pub struct QueryParam {
-  service: Name,
-  domain: Name,
+  service: SmolStr,
+  domain: SmolStr,
   timeout: Duration,
   ipv4_interface: Option<Ipv4Addr>,
   ipv6_interface: Option<u32>,
@@ -157,7 +155,7 @@ pub struct QueryParam {
 impl QueryParam {
   /// Creates a new query parameter with default values.
   #[inline]
-  pub fn new(service: Name) -> Self {
+  pub fn new(service: SmolStr) -> Self {
     Self {
       service,
       domain: Name::local(),
@@ -181,7 +179,7 @@ impl QueryParam {
   /// let params = QueryParam::new("service._tcp".into())
   ///   .with_domain("local.".into());
   /// ```
-  pub fn with_domain(mut self, domain: Name) -> Self {
+  pub fn with_domain(mut self, domain: SmolStr) -> Self {
     self.domain = domain;
     self
   }
@@ -197,7 +195,7 @@ impl QueryParam {
   ///   .with_domain("local.".into());
   ///
   /// assert_eq!(params.domain().as_str(), "local.");
-  pub const fn domain(&self) -> &Name {
+  pub const fn domain(&self) -> &SmolStr {
     &self.domain
   }
 
@@ -211,7 +209,7 @@ impl QueryParam {
   /// let params = QueryParam::new("service._tcp".into())
   ///   .with_service("service._udp".into());
   /// ```
-  pub fn with_service(mut self, service: Name) -> Self {
+  pub fn with_service(mut self, service: SmolStr) -> Self {
     self.service = service;
     self
   }
@@ -227,7 +225,7 @@ impl QueryParam {
   ///   .with_service("service._udp".into());
   ///
   /// assert_eq!(params.service().as_str(), "service._udp");
-  pub const fn service(&self) -> &Name {
+  pub const fn service(&self) -> &SmolStr {
     &self.service
   }
 
@@ -544,7 +542,7 @@ where
   <N::Runtime as RuntimeLite>::spawn_detach(async move {
     match client
       .query_in(
-        params.service.append_fqdn(&params.domain),
+        Name::append_fqdn(params.service.as_str(), params.domain.as_str()),
         params.want_unicast_response,
         params.timeout,
         entry_tx.clone(),
@@ -570,7 +568,7 @@ where
 }
 
 /// Similar to [`query_with`], however it uses all the default parameters
-pub async fn lookup<N>(service: Name) -> io::Result<Lookup>
+pub async fn lookup<N>(service: SmolStr) -> io::Result<Lookup>
 where
   N: Net,
 {
@@ -593,7 +591,7 @@ struct Client<N: Net> {
 impl<N: Net> Client<N> {
   async fn query_in(
     self,
-    service: Name,
+    service: SmolStr,
     want_unicast_response: bool,
     timeout: Duration,
     tx: Sender<io::Result<ServiceEntry>>,
@@ -668,7 +666,7 @@ impl<N: Net> Client<N> {
     self.send_query(q).await?;
 
     // Map the in-progress responses
-    let mut inprogress: HashMap<Name, Arc<AtomicRefCell<ServiceEntryBuilder>>> = HashMap::new();
+    let mut inprogress: HashMap<SmolStr, Arc<AtomicRefCell<ServiceEntryBuilder>>> = HashMap::new();
 
     // Listen until we reach the timeout
     let finish = <N::Runtime as RuntimeLite>::sleep(timeout);
@@ -708,7 +706,7 @@ impl<N: Net> Client<N> {
 
   async fn handle_record(
     &self,
-    inprogress: &mut HashMap<Name, Arc<AtomicRefCell<ServiceEntryBuilder>>>,
+    inprogress: &mut HashMap<SmolStr, Arc<AtomicRefCell<ServiceEntryBuilder>>>,
     msg: Message,
     src_addr: SocketAddr,
     tx: &Sender<io::Result<ServiceEntry>>,
@@ -724,23 +722,23 @@ impl<N: Net> Client<N> {
           let ent = ensure_name(inprogress, data);
           inp = Some(ent);
         }
-        RecordData::SRV(data) => {
+        RecordData::SRV { port, target, .. } => {
           let name = header.name().clone();
           // Check for a target mismatch
-          if data.target().ne(&name) {
-            alias(inprogress, name.clone(), data.target().clone());
+          if target.ne(&name) {
+            alias(inprogress, name.clone(), target.clone());
 
             // Get the port
             let ent = ensure_name(inprogress, name);
             let mut ref_mut = ent.borrow_mut();
-            ref_mut.host = data.target().clone();
-            ref_mut.port = data.port();
+            ref_mut.host = target.clone();
+            ref_mut.port = port;
           } else {
             // Get the port
             let ent = ensure_name(inprogress, name.clone());
             let mut ref_mut = ent.borrow_mut();
-            ref_mut.port = data.port();
-            ref_mut.host = data.into_target();
+            ref_mut.port = port;
+            ref_mut.host = target;
           }
         }
         RecordData::TXT(data) => {
@@ -990,34 +988,7 @@ where
             let data = &buf[..size];
             tracing::trace!(local_addr=%self.local_addr, from=%src, multicast=%self.multicast, data=?data, "mdns client: received packet");
 
-            let header = match Header::decode(data) {
-              Ok(header) => header,
-              Err(e) => {
-                tracing::error!(local_addr=%self.local_addr, from=%src, multicast=%self.multicast, err=%e, "mdns client: failed to decode packet");
-                return ControlFlow::Continue(());
-              }
-            };
-
-            let mut questions = (0..header.qdcount as usize)
-              .map(|_| Question::default())
-              .collect::<TinyVec<_>>();
-            let mut answers = (0..header.ancount as usize)
-              .map(|_| ResourceRecord::default())
-              .collect::<TinyVec<_>>();
-            let mut authorities = (0..header.nscount as usize)
-              .map(|_| ResourceRecord::default())
-              .collect::<TinyVec<_>>();
-            let mut additionals = (0..header.arcount as usize)
-              .map(|_| ResourceRecord::default())
-              .collect::<TinyVec<_>>();
-
-            let msg = match dns_protocol::Message::read(
-              data,
-              &mut questions,
-              &mut answers,
-              &mut authorities,
-              &mut additionals,
-            ) {
+            let msg = match Message::decode(data) {
               Ok(msg) => msg,
               Err(e) => {
                 tracing::error!(local_addr=%self.local_addr, from=%src, multicast=%self.multicast, err=%e, "mdns client: failed to deserialize packet");
@@ -1066,8 +1037,8 @@ where
 }
 
 fn ensure_name(
-  inprogress: &mut HashMap<Name, Arc<AtomicRefCell<ServiceEntryBuilder>>>,
-  name: Name,
+  inprogress: &mut HashMap<SmolStr, Arc<AtomicRefCell<ServiceEntryBuilder>>>,
+  name: SmolStr,
 ) -> Arc<AtomicRefCell<ServiceEntryBuilder>> {
   match inprogress.entry(name.clone()) {
     Entry::Occupied(occupied_entry) => occupied_entry.into_mut().clone(),
@@ -1080,9 +1051,9 @@ fn ensure_name(
 }
 
 fn alias(
-  inprogress: &mut HashMap<Name, Arc<AtomicRefCell<ServiceEntryBuilder>>>,
-  src: Name,
-  dst: Name,
+  inprogress: &mut HashMap<SmolStr, Arc<AtomicRefCell<ServiceEntryBuilder>>>,
+  src: SmolStr,
+  dst: SmolStr,
 ) {
   let src_ent = match inprogress.entry(src.clone()) {
     Entry::Occupied(occupied_entry) => occupied_entry.into_mut(),

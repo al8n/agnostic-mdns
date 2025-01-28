@@ -88,7 +88,7 @@ impl SRV {
   const WEIGHT_END: usize = 4;
   const PORT_END: usize = 6;
 
-  const PRIORITY_RANGE: Range<usize> = Self::PORT_OFFSET..Self::PRIORITY_END;
+  const PRIORITY_RANGE: Range<usize> = Self::PRIORITY_OFFSET..Self::PRIORITY_END;
   const WEIGHT_RANGE: Range<usize> = Self::WEIGHT_OFFSET..Self::WEIGHT_END;
   const PORT_RANGE: Range<usize> = Self::PORT_OFFSET..Self::PORT_END;
   const TARGET_RANGE: RangeFrom<usize> = Self::TARGET_OFFSET..;
@@ -99,10 +99,9 @@ impl SRV {
     let label = Label::from(target.as_str());
     let len = label.serialized_len();
     let mut buf = vec![0; Self::TARGET_OFFSET + len];
-    buf[Self::PRIORITY_RANGE].copy_from_slice(priority.to_ne_bytes().as_ref());
-    buf[Self::WEIGHT_RANGE].copy_from_slice(weight.to_ne_bytes().as_ref());
-    buf[Self::PORT_RANGE].copy_from_slice(port.to_ne_bytes().as_ref());
-
+    buf[Self::PRIORITY_RANGE].copy_from_slice(priority.to_be_bytes().as_ref());
+    buf[Self::WEIGHT_RANGE].copy_from_slice(weight.to_be_bytes().as_ref());
+    buf[Self::PORT_RANGE].copy_from_slice(port.to_be_bytes().as_ref());
     label
       .serialize(&mut buf[Self::TARGET_RANGE])
       .map_err(|_| ProtoError::NameTooLong)
@@ -148,7 +147,7 @@ impl SRV {
   #[inline]
   pub fn priority(&self) -> u16 {
     let val = unsafe { &*(self.data[Self::PRIORITY_RANGE].as_ptr() as *const AtomicU16) };
-    val.load(Ordering::Acquire)
+    u16::from_be(val.load(Ordering::Acquire))
   }
 
   /// ```text
@@ -191,7 +190,7 @@ impl SRV {
   #[inline]
   pub fn weight(&self) -> u16 {
     let val = unsafe { &*(self.data[Self::WEIGHT_RANGE].as_ptr() as *const AtomicU16) };
-    val.load(Ordering::Acquire)
+    u16::from_be(val.load(Ordering::Acquire))
   }
 
   /// ```text
@@ -204,7 +203,7 @@ impl SRV {
   #[inline]
   pub fn port(&self) -> u16 {
     let val = unsafe { &*(self.data[Self::PORT_RANGE].as_ptr() as *const AtomicU16) };
-    val.load(Ordering::Acquire)
+    u16::from_be(val.load(Ordering::Acquire))
   }
 
   /// Sets the priority of the SRV record data.
@@ -213,7 +212,7 @@ impl SRV {
   #[inline]
   pub fn update_priority(&self, val: u16) {
     let priority = unsafe { &*(self.data[Self::PRIORITY_RANGE].as_ptr() as *const AtomicU16) };
-    priority.store(val, Ordering::Release);
+    priority.store(val.to_be(), Ordering::Release);
   }
 
   /// Sets the weight of the SRV record data.
@@ -222,7 +221,7 @@ impl SRV {
   #[inline]
   pub fn update_weight(&self, val: u16) {
     let weight = unsafe { &*(self.data[Self::WEIGHT_RANGE].as_ptr() as *const AtomicU16) };
-    weight.store(val, Ordering::Release);
+    weight.store(val.to_be(), Ordering::Release);
   }
 
   /// Updates the port of the SRV record data.
@@ -231,7 +230,7 @@ impl SRV {
   #[inline]
   pub fn set_port(&self, val: u16) {
     let port = unsafe { &*(self.data[Self::PORT_RANGE].as_ptr() as *const AtomicU16) };
-    port.store(val, Ordering::Release);
+    port.store(val.to_be(), Ordering::Release);
   }
 
   /// ```text

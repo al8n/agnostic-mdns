@@ -1,16 +1,17 @@
-use super::{Name, RecordType};
+use super::{Name, ProtoError, RecordType};
 use dns_protocol::{Error, Flags, Message, Question, ResourceType};
+use smol_str::SmolStr;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Query {
-  name: Name,
+  name: SmolStr,
   ty: RecordType,
   want_unicast_response: bool,
 }
 
 impl Query {
   #[inline]
-  pub const fn new(name: Name, want_unicast_response: bool) -> Self {
+  pub const fn new(name: SmolStr, want_unicast_response: bool) -> Self {
     Self {
       name,
       ty: RecordType::PTR,
@@ -18,14 +19,32 @@ impl Query {
     }
   }
 
+  /// Only consumes the buffer if there is enough data to decode the query.
   #[inline]
-  pub const fn name(&self) -> &Name {
-    &self.name
-  }
+  pub fn skip_decode(src: &[u8], off: usize) -> Result<usize, ProtoError> {
+    let mut off = Name::skip_decode(src, off)?;
+    let len = src.len();
+    if off == src.len() {
+      return Ok(off);
+    }
 
-  #[inline]
-  pub const fn query_type(&self) -> RecordType {
-    self.ty
+    if len < off + 2 {
+      return Err(ProtoError::NotEnoughData);
+    }
+
+    // type
+    off += 2;
+    if len == off {
+      return Ok(off);
+    }
+
+    if len < off + 2 {
+      return Err(ProtoError::NotEnoughData);
+    }
+
+    // class
+    off += 2;
+    Ok(off)
   }
 
   /// Encodes the query into a DNS message wire format.

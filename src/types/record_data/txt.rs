@@ -54,6 +54,13 @@ impl TXT {
   pub fn data(&self) -> &[u8] {
     &self.data
   }
+
+  pub(crate) fn decode_strings(
+    src: &[u8],
+    off: usize,
+  ) -> Result<(SmallVec<SmolStr>, usize), ProtoError> {
+    decode_txt(src, off)
+  }
 }
 
 fn encode_txt(txt: &[SmolStr], buf: &mut [u8], mut off: usize) -> Result<usize, ProtoError> {

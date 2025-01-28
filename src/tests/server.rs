@@ -1,14 +1,15 @@
 use core::time::Duration;
-use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
+use std::net::{Ipv4Addr, Ipv6Addr};
 
 use agnostic_net::Net;
 use futures::StreamExt;
+use smol_str::SmolStr;
 
 use crate::{
   client::{query_with, QueryParam},
   server::{Server, ServerOptions},
   tests::make_service,
-  Name, Service,
+  Service,
 };
 
 use super::make_service_with_service_name;
@@ -39,11 +40,15 @@ async fn server_start_stop<N: Net>() {
   assert_eq!(s.hostname().as_str(), "testhost.");
   assert_eq!(s.domain().as_str(), "local.");
   assert_eq!(
-    s.ips(),
-    &[
-      IpAddr::V4("192.168.0.42".parse().unwrap()),
-      IpAddr::V6("2620:0:1000:1900:b0c2:d0b2:c411:18bc".parse().unwrap())
-    ]
+    s.ipv4s(),
+    &["192.168.0.42".parse::<Ipv4Addr>().unwrap().into(),]
+  );
+  assert_eq!(
+    s.ipv6s(),
+    &["2620:0:1000:1900:b0c2:d0b2:c411:18bc"
+      .parse::<Ipv6Addr>()
+      .unwrap()
+      .into(),]
   );
   assert_eq!(s.port(), 80);
   assert_eq!(s.txt_records(), &["Local web server"]);
@@ -60,12 +65,12 @@ async fn server_lookup<N: Net>() {
     .unwrap();
 
   #[cfg(target_os = "linux")]
-  let params = QueryParam::new(Name::from("_foobar._tcp"))
+  let params = QueryParam::new(SmolStr::from("_foobar._tcp"))
     .with_timeout(Duration::from_millis(50))
     .with_disable_ipv6(false);
 
   #[cfg(not(target_os = "linux"))]
-  let params = QueryParam::new(Name::from("_foobar._tcp"))
+  let params = QueryParam::new(SmolStr::from("_foobar._tcp"))
     .with_timeout(Duration::from_millis(50))
     .with_disable_ipv6(true);
 

@@ -1,5 +1,10 @@
 use dns_protocol::ResourceType;
-use std::net::{Ipv4Addr, Ipv6Addr};
+use smol_str::SmolStr;
+use std::{
+  net::{Ipv4Addr, Ipv6Addr},
+  str::FromStr,
+};
+use triomphe::Arc;
 
 use crate::{IPV4_SIZE, IPV6_SIZE};
 
@@ -10,15 +15,6 @@ mod txt;
 pub use ptr::*;
 pub use srv::*;
 pub use txt::*;
-
-// The code in this file is copy from https://github.com/hickory-dns/hickory-dns/blob/main/crates/proto/src/rr/rdata/srv.rs
-//
-// Copyright 2015-2023 Benjamin Fry <benjaminfry@me.com>
-//
-// The original code is licensed under the Apache License, Version 2.data, <LICENSE-APACHE or
-// https://apache.org/licenses/LICENSE-2.data> or the MIT license <LICENSE-MIT or
-// https://opensource.org/licenses/MIT>, at your option. This file may not be
-// copied, modified, or distributed except according to those terms.
 
 /// ```text
 /// -- RFC 1035 -- Domain Implementation and Specification    November 1987
@@ -45,6 +41,14 @@ pub use txt::*;
 /// ```
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
 pub struct A([u8; IPV4_SIZE]);
+
+impl FromStr for A {
+  type Err = <Ipv4Addr as FromStr>::Err;
+
+  fn from_str(s: &str) -> Result<Self, Self::Err> {
+    s.parse::<Ipv4Addr>().map(Into::into)
+  }
+}
 
 impl A {
   /// Creates a new `A` record data.
@@ -90,6 +94,14 @@ impl From<A> for Ipv4Addr {
 /// ```
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
 pub struct AAAA([u8; IPV6_SIZE]);
+
+impl FromStr for AAAA {
+  type Err = <Ipv6Addr as FromStr>::Err;
+
+  fn from_str(s: &str) -> Result<Self, Self::Err> {
+    s.parse::<Ipv6Addr>().map(Into::into)
+  }
+}
 
 impl AAAA {
   /// Creates a new `AAAA` record data.
@@ -250,6 +262,36 @@ impl RecordDataRef<'_> {
       Self::AAAA(_) => ResourceType::AAAA,
       Self::PTR(_) => ResourceType::Ptr,
       Self::SRV(_) => ResourceType::Srv,
+      Self::TXT(_) => ResourceType::Txt,
+    }
+  }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+#[allow(clippy::upper_case_acronyms)]
+pub(crate) enum RecordData {
+  A(Ipv4Addr),
+  AAAA(Ipv6Addr),
+  PTR(SmolStr),
+  SRV {
+    priority: u16,
+    weight: u16,
+    port: u16,
+    target: SmolStr,
+  },
+  TXT(Arc<[SmolStr]>),
+}
+
+impl RecordData {
+  /// Returns the type of the record data.
+  #[inline]
+  pub const fn ty(&self) -> ResourceType {
+    match self {
+      Self::A(_) => ResourceType::A,
+      Self::AAAA(_) => ResourceType::AAAA,
+      Self::PTR(_) => ResourceType::Ptr,
+      Self::SRV { .. } => ResourceType::Srv,
       Self::TXT(_) => ResourceType::Txt,
     }
   }

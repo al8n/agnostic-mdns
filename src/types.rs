@@ -1,26 +1,20 @@
-use std::collections::HashMap;
-
-use smol_str::SmolStr;
-
-mod answer;
 mod message;
 mod name;
 mod query;
 mod record;
 mod record_data;
 mod record_type;
-mod srv;
 
-pub use name::Name;
-pub use record::{RecordHeader, RecordRef};
+pub use record::RecordRef;
 pub use record_data::{RecordDataRef, A, AAAA, PTR, SRV, TXT};
 pub use record_type::{RecordType, UnknownRecordTypeStr};
 pub use smallvec_wrapper::{OneOrMore, TinyVec};
 
-pub(crate) use message::Header;
+pub(crate) use message::Message;
+pub(crate) use name::Name;
 pub(crate) use query::Query;
+pub(crate) use record_data::RecordData;
 
-const MAX_COMPRESSION_OFFSET: usize = 2 << 13;
 /// See RFC 1035 section 2.3.4
 const MAX_DOMAIN_NAME_WIRE_OCTETS: usize = 255;
 /// This is the maximum number of compression pointers that should occur in a
@@ -34,78 +28,12 @@ const MAX_DOMAIN_NAME_WIRE_OCTETS: usize = 255;
 /// not something a well written implementation should ever do, so we leave them
 /// to trip the maximum compression pointer check.
 const MAX_COMPRESSION_POINTERS: usize = (MAX_DOMAIN_NAME_WIRE_OCTETS + 1) / 2 - 2;
-
 const DNS_CLASS_IN: u16 = 1;
-
-const COMPRESSION_POINTER_MASK: u16 = 0xC000;
 const MESSAGE_HEADER_SIZE: usize = 12;
-const QDCOUNT_OFFSET: usize = 4;
-const ANCOUNT_OFFSET: usize = 6;
-pub(crate) const OP_CODE_QUERY: u16 = 0;
-pub(crate) const RESPONSE_CODE_NO_ERROR: u16 = 0;
 
-struct SlicableSmolStr {
-  s: SmolStr,
-  start: usize,
-  end: usize,
-}
-
-impl From<SmolStr> for SlicableSmolStr {
-  #[inline]
-  fn from(s: SmolStr) -> Self {
-    Self {
-      end: s.len(),
-      s,
-      start: 0,
-    }
-  }
-}
-
-impl core::borrow::Borrow<str> for SlicableSmolStr {
-  #[inline]
-  fn borrow(&self) -> &str {
-    &self.s[self.start..self.end]
-  }
-}
-
-impl AsRef<str> for SlicableSmolStr {
-  #[inline]
-  fn as_ref(&self) -> &str {
-    &self.s[self.start..self.end]
-  }
-}
-
-impl SlicableSmolStr {
-  #[inline]
-  fn new(s: SmolStr, start: usize, end: usize) -> Self {
-    Self { s, start, end }
-  }
-}
-
-impl core::ops::Deref for SlicableSmolStr {
-  type Target = str;
-
-  fn deref(&self) -> &Self::Target {
-    &self.s[self.start..self.end]
-  }
-}
-
-impl PartialEq for SlicableSmolStr {
-  fn eq(&self, other: &Self) -> bool {
-    self.s[self.start..self.end] == other.s[other.start..other.end]
-  }
-}
-
-impl Eq for SlicableSmolStr {}
-
-impl core::hash::Hash for SlicableSmolStr {
-  fn hash<H: core::hash::Hasher>(&self, state: &mut H) {
-    self.s[self.start..self.end].hash(state);
-  }
-}
-
+/// Error when encoding or decoding DNS messages
 #[derive(Debug, PartialEq, Eq, thiserror::Error)]
-pub(crate) enum ProtoError {
+pub enum ProtoError {
   /// Domain name is not fully qualified
   #[error("domain must be fully qualified")]
   NotFqdn,
@@ -164,32 +92,6 @@ impl From<u16> for DNSClass {
       1 => DNSClass::IN,
       _ => DNSClass::UNKNOWN(value),
     }
-  }
-}
-
-/// Used to allow a more efficient compression map
-/// to be used for internal packDomainName calls without changing the
-/// signature or functionality of public API.
-struct CompressionMap {
-  map: HashMap<SlicableSmolStr, u16>,
-}
-
-impl CompressionMap {
-  #[inline]
-  fn new() -> Self {
-    Self {
-      map: HashMap::new(),
-    }
-  }
-
-  #[inline]
-  fn insert(&mut self, s: SlicableSmolStr, pos: u16) {
-    self.map.insert(s, pos);
-  }
-
-  #[inline]
-  fn find(&self, s: &str) -> Option<u16> {
-    self.map.get(s).copied()
   }
 }
 
