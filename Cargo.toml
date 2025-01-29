@@ -38,7 +38,7 @@ smol = ["agnostic-net/smol", "std"]
 agnostic-net = { version = "0.1" }
 atomic_refcell = "0.1"
 async-channel = "2"
-dns-protocol = { version = "0.1", path = "../async-dns/dns-protocol" }
+dns-protocol = { version = "0.1", git = "https://github.com/al8n/async-dns" }
 either = "1"
 futures = "0.3"
 iprobe = "0.1"
