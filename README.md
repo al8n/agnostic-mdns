@@ -3,7 +3,7 @@
 </div>
 <div align="center">
 
-Async runtime agnostic, simple and lightweight mDNS client/server library in Rust.
+[Sans-I/O] style simple and lightweight mDNS client/server library for any async runtime.
 
 Port [HashiCorp's mdns](https://github.com/hashicorp/mdns) to Rust.
 
@@ -21,7 +21,7 @@ Port [HashiCorp's mdns](https://github.com/hashicorp/mdns) to Rust.
 
 ## Introduction
 
-Async runtime agnostic, simple and lightweight mDNS client/server library in Rust. mDNS or Multicast DNS can be used to discover services on the local network without the use of an authoritative DNS server. This enables peer-to-peer discovery. It is important to note that many networks restrict the use of multicasting, which prevents mDNS from functioning. Notably, multicast cannot be used in any sort of cloud, or shared infrastructure environment. However it works well in most office, home, or private infrastructure environments.
+[Sans-I/O] style simple and lightweight mDNS client/server library for any async runtime. mDNS or Multicast DNS can be used to discover services on the local network without the use of an authoritative DNS server. This enables peer-to-peer discovery. It is important to note that many networks restrict the use of multicasting, which prevents mDNS from functioning. Notably, multicast cannot be used in any sort of cloud, or shared infrastructure environment. However it works well in most office, home, or private infrastructure environments.
 
 ## Installation
 
@@ -70,3 +70,4 @@ Copyright (c) 2025 Al Liu.
 [doc-url]: https://docs.rs/agnostic-mdns
 [crates-url]: https://crates.io/crates/agnostic-mdns
 [codecov-url]: https://app.codecov.io/gh/al8n/agnostic-mdns/
+[Sans-I/O]: https://sans-io.readthedocs.io/

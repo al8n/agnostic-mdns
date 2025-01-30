@@ -1,15 +1,15 @@
 [package]
 name = "agnostic-mdns"
-version = "0.2.0"
+version = "0.3.0"
 edition = "2021"
 repository = "https://github.com/al8n/agnostic-mdns"
 homepage = "https://github.com/al8n/agnostic-mdns"
 documentation = "https://docs.rs/agnostic-mdns"
-description = "Async runtime agnostic, simple and lightweight mDNS client/server library in Rust."
+description = "Sans-I/O style simple and lightweight mDNS client/server library for any async runtime."
 license = "MIT OR Apache-2.0"
-rust-version = "1.76"
+rust-version = "1.81.0"
 categories = ["network-programming"]
-keywords = ["mdns", "dns-sd", "zeroconf"]
+keywords = ["mdns", "dns-sd", "zeroconf", "sansio"]
 
 [[example]]
 name = "tokio"
@@ -35,7 +35,7 @@ async-std = ["agnostic-net/async-std", "std"]
 smol = ["agnostic-net/smol", "std"]
 
 [dependencies]
-agnostic-net = { version = "0.1" }
+agnostic-net = { version = "0.2" }
 atomic_refcell = "0.1"
 async-channel = "2"
 dns-protocol = { version = "0.1", package = "dns-protocol-patch" }
@@ -59,7 +59,7 @@ hostname = "0.4"
 
 [dev-dependencies]
 paste = "1"
-agnostic-net = { version = "0.1", features = ["tokio", "async-std", "smol"] }
+agnostic-net = { version = "0.2", features = ["tokio", "async-std", "smol"] }
 tracing-subscriber = { version = "0.3", features = [
   "env-filter",
   "tracing-log",
