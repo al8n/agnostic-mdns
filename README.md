@@ -29,21 +29,21 @@ Port [HashiCorp's mdns](https://github.com/hashicorp/mdns) to Rust.
 
   ```toml
   [dependencies]
-  agnostic-mdns = { version = "0.2", features = ["tokio"] }
+  agnostic-mdns = { version = "0.3", features = ["tokio"] }
   ```
 
 - `async-std`
   
   ```toml
   [dependencies]
-  agnostic-mdns = { version = "0.2", features = ["async-std"] }
+  agnostic-mdns = { version = "0.3", features = ["async-std"] }
   ```
 
 - `smol`
   
   ```toml
   [dependencies]
-  agnostic-mdns = { version = "0.2", features = ["smol"] }
+  agnostic-mdns = { version = "0.3", features = ["smol"] }
   ```
 
 ## Examples
