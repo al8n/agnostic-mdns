@@ -44,7 +44,7 @@ futures = "0.3"
 iprobe = "0.1"
 pin-project-lite = "0.2"
 smol_str = "0.3"
-smallvec-wrapper = "0.2"
+smallvec-wrapper = "0.3"
 socket2 = { version = "0.5", features = ["all"] }
 triomphe = "0.1"
 thiserror = "2"
