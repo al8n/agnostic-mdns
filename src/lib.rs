@@ -35,7 +35,7 @@ pub use server::*;
 mod types;
 
 pub use iprobe as netprobe;
-pub use smol_str::{format_smolstr, SmolStr};
+pub use smol_str::{SmolStr, format_smolstr};
 pub use types::*;
 
 /// Types for `tokio` runtime

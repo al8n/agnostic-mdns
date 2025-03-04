@@ -5,7 +5,7 @@ mod record;
 mod record_data;
 
 pub use record::RecordRef;
-pub use record_data::{RecordDataRef, A, AAAA, PTR, SRV, TXT};
+pub use record_data::{A, AAAA, PTR, RecordDataRef, SRV, TXT};
 pub use smallvec_wrapper::{OneOrMore, TinyVec};
 
 pub(crate) use message::Message;
@@ -25,7 +25,7 @@ const MAX_DOMAIN_NAME_WIRE_OCTETS: usize = 255;
 /// than this, and still doesn't loop, by pointing to a previous pointer. This is
 /// not something a well written implementation should ever do, so we leave them
 /// to trip the maximum compression pointer check.
-const MAX_COMPRESSION_POINTERS: usize = (MAX_DOMAIN_NAME_WIRE_OCTETS + 1) / 2 - 2;
+const MAX_COMPRESSION_POINTERS: usize = MAX_DOMAIN_NAME_WIRE_OCTETS.div_ceil(2) - 2;
 const DNS_CLASS_IN: u16 = 1;
 const MESSAGE_HEADER_SIZE: usize = 12;
 

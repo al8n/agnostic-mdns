@@ -1,15 +1,15 @@
 [package]
 name = "agnostic-mdns"
-version = "0.3.0"
-edition = "2021"
+version = "0.3.1"
+edition = "2024"
 repository = "https://github.com/al8n/agnostic-mdns"
 homepage = "https://github.com/al8n/agnostic-mdns"
 documentation = "https://docs.rs/agnostic-mdns"
-description = "Sans-I/O style simple and lightweight mDNS client/server library for any async runtime."
+description = "Simple and lightweight mDNS client/server library for any async runtime."
 license = "MIT OR Apache-2.0"
-rust-version = "1.81.0"
+rust-version = "1.85.0"
 categories = ["network-programming"]
-keywords = ["mdns", "dns-sd", "zeroconf", "sansio"]
+keywords = ["mdns", "dns-sd", "zeroconf", "agnostic", "async-mdns"]
 
 [[example]]
 name = "tokio"
@@ -44,7 +44,7 @@ futures = "0.3"
 iprobe = "0.1"
 pin-project-lite = "0.2"
 smol_str = "0.3"
-smallvec-wrapper = "0.2"
+smallvec-wrapper = "0.3"
 socket2 = { version = "0.5", features = ["all"] }
 triomphe = "0.1"
 thiserror = "2"

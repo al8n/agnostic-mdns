@@ -3,14 +3,14 @@ use core::{
   time::Duration,
 };
 use std::{
-  collections::{hash_map::Entry, HashMap},
+  collections::{HashMap, hash_map::Entry},
   io,
   ops::ControlFlow,
   pin::Pin,
   task::{Context, Poll},
 };
 
-use agnostic_net::{runtime::RuntimeLite, Net, UdpSocket};
+use agnostic_net::{Net, UdpSocket, runtime::RuntimeLite};
 use async_channel::{Receiver, Sender};
 use atomic_refcell::AtomicRefCell;
 use futures::{FutureExt, Stream};
@@ -19,9 +19,9 @@ use smol_str::SmolStr;
 use triomphe::Arc;
 
 use crate::{
+  IPV4_MDNS, IPV6_MDNS, MAX_INLINE_PACKET_SIZE, MAX_PAYLOAD_SIZE, MDNS_PORT,
   types::{Message, Name, Query, RecordData},
   utils::{multicast_udp4_socket, multicast_udp6_socket, unicast_udp4_socket, unicast_udp6_socket},
-  IPV4_MDNS, IPV6_MDNS, MAX_INLINE_PACKET_SIZE, MAX_PAYLOAD_SIZE, MDNS_PORT,
 };
 
 /// Returned after we query for a service.

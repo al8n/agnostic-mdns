@@ -1,8 +1,9 @@
 use std::time::Duration;
 
 use agnostic_mdns::{
-  async_std::{query_with, Server},
-  hostname, QueryParam, ServerOptions, ServiceBuilder, SmolStr,
+  QueryParam, ServerOptions, ServiceBuilder, SmolStr,
+  async_std::{Server, query_with},
+  hostname,
 };
 use futures::StreamExt;
 

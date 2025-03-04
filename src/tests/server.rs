@@ -6,10 +6,10 @@ use futures::StreamExt;
 use smol_str::SmolStr;
 
 use crate::{
-  client::{query_with, QueryParam},
+  Service,
+  client::{QueryParam, query_with},
   server::{Server, ServerOptions},
   tests::make_service,
-  Service,
 };
 
 use super::make_service_with_service_name;

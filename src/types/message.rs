@@ -1,4 +1,4 @@
-use super::{record::Record, ProtoError, Query, MESSAGE_HEADER_SIZE};
+use super::{MESSAGE_HEADER_SIZE, ProtoError, Query, record::Record};
 
 /// The message used in mDNS.
 #[derive(Debug)]

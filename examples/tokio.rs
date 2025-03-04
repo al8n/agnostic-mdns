@@ -1,9 +1,8 @@
 use std::time::Duration;
 
 use agnostic_mdns::{
-  hostname,
-  tokio::{query_with, Server},
-  QueryParam, ServerOptions, ServiceBuilder, SmolStr,
+  QueryParam, ServerOptions, ServiceBuilder, SmolStr, hostname,
+  tokio::{Server, query_with},
 };
 use futures::StreamExt;
 

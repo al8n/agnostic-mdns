@@ -5,7 +5,7 @@ use core::{
 
 use dns_protocol::ResourceType;
 
-use crate::{tests::make_service, types::RecordDataRef, Zone, A, AAAA};
+use crate::{A, AAAA, Zone, tests::make_service, types::RecordDataRef};
 
 use super::*;
 

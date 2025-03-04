@@ -8,13 +8,13 @@ use std::{
 
 use super::{
   invalid_input_err, is_fqdn,
-  types::{Name, RecordDataRef, RecordRef, A, AAAA, PTR, SRV, TXT},
+  types::{A, AAAA, Name, PTR, RecordDataRef, RecordRef, SRV, TXT},
 };
 use agnostic_net::runtime::RuntimeLite;
 use dns_protocol::{Label, ResourceType};
 use either::Either;
 use smallvec_wrapper::TinyVec;
-use smol_str::{format_smolstr, SmolStr};
+use smol_str::{SmolStr, format_smolstr};
 use triomphe::Arc;
 
 const DEFAULT_TTL: u32 = 120;
@@ -485,7 +485,7 @@ impl ServiceBuilder {
   {
     let domain = match self.domain {
       Some(domain) if !is_fqdn(domain.as_str()) => {
-        return Err(invalid_input_err(ServiceError::NotFQDN(domain)))
+        return Err(invalid_input_err(ServiceError::NotFQDN(domain)));
       }
       Some(domain) => domain,
       None => Name::local_fqdn(),

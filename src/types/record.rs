@@ -5,7 +5,7 @@ use either::Either;
 use smol_str::SmolStr;
 use triomphe::Arc;
 
-use super::{record_data::RecordData, Name, ProtoError, RecordDataRef, DNS_CLASS_IN, TXT};
+use super::{DNS_CLASS_IN, Name, ProtoError, RecordDataRef, TXT, record_data::RecordData};
 
 const IPV4_LEN: usize = 4;
 const IPV6_LEN: usize = 16;

@@ -2,13 +2,13 @@ use core::net::{Ipv4Addr, SocketAddr};
 use std::{io, ops::ControlFlow};
 
 use agnostic_net::{
-  runtime::{AsyncSpawner, RuntimeLite},
   Net, UdpSocket,
+  runtime::{AsyncSpawner, RuntimeLite},
 };
 use async_channel::{Receiver, Sender};
 use atomic_refcell::AtomicRefCell;
 use dns_protocol::{Flags, Message, Opcode, Question, ResourceRecord, ResponseCode, Serialize};
-use futures::{stream::FuturesUnordered, FutureExt, StreamExt as _};
+use futures::{FutureExt, StreamExt as _, stream::FuturesUnordered};
 use iprobe::{ipv4, ipv6};
 use smallvec_wrapper::TinyVec;
 use triomphe::Arc;
@@ -16,9 +16,9 @@ use triomphe::Arc;
 use crate::invalid_data_err;
 
 use super::{
+  MAX_INLINE_PACKET_SIZE, MAX_PAYLOAD_SIZE, MDNS_PORT, Zone,
   types::RecordRef,
   utils::{multicast_udp4_socket, multicast_udp6_socket},
-  Zone, MAX_INLINE_PACKET_SIZE, MAX_PAYLOAD_SIZE, MDNS_PORT,
 };
 
 const FORCE_UNICAST_RESPONSES: bool = false;

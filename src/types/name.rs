@@ -1,6 +1,6 @@
-use smol_str::{format_smolstr, SmolStr};
+use smol_str::{SmolStr, format_smolstr};
 
-use super::{escape_byte, ProtoError, MAX_COMPRESSION_POINTERS, MAX_DOMAIN_NAME_WIRE_OCTETS};
+use super::{MAX_COMPRESSION_POINTERS, MAX_DOMAIN_NAME_WIRE_OCTETS, ProtoError, escape_byte};
 
 pub(crate) struct Name;
 

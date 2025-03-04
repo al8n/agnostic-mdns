@@ -3,8 +3,8 @@ use smol_str::SmolStr;
 use triomphe::Arc;
 
 use crate::{
-  types::{ddd_to_byte, escape_bytes, is_ddd},
   ProtoError,
+  types::{ddd_to_byte, escape_bytes, is_ddd},
 };
 
 /// ```text
