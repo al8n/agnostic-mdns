@@ -52,7 +52,7 @@ thiserror = "2"
 tracing = "0.1"
 
 [target.'cfg(unix)'.dependencies]
-rustix = { version = "1.0.0-prerelease.1", features = ["system", "net"] }
+rustix = { version = "1", features = ["system", "net"] }
 
 [target.'cfg(windows)'.dependencies]
 hostname = "0.4"
