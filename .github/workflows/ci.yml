@@ -195,8 +195,6 @@ jobs:
           key: ${{ runner.os }}-coverage-cargo-build-target
       - name: Run tarpaulin
         uses: actions-rs/cargo@v1
-        env:
-          RUSTFLAGS: "--cfg all_tests"
         with:
           command: tarpaulin
           args: --features tokio --run-types tests --run-types doctests --workspace --out xml
