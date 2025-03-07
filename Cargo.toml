@@ -1,6 +1,6 @@
 [package]
 name = "agnostic-mdns"
-version = "0.3.1"
+version = "0.3.2"
 edition = "2024"
 repository = "https://github.com/al8n/agnostic-mdns"
 homepage = "https://github.com/al8n/agnostic-mdns"
@@ -45,17 +45,18 @@ iprobe = "0.1"
 pin-project-lite = "0.2"
 smol_str = "0.3"
 smallvec-wrapper = "0.3"
-socket2 = { version = "0.5", features = ["all"] }
+
 triomphe = "0.1"
 thiserror = "2"
 
 tracing = "0.1"
 
 [target.'cfg(unix)'.dependencies]
-rustix = { version = "0.38", features = ["system", "net"] }
+rustix = { version = "1", features = ["system", "net"] }
 
 [target.'cfg(windows)'.dependencies]
 hostname = "0.4"
+socket2 = { version = "0.5", features = ["all"] }
 
 [dev-dependencies]
 paste = "1"
