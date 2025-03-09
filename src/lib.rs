@@ -139,6 +139,7 @@ pub mod async_std {
 
 pub use agnostic_net as net;
 
+mod endpoint;
 mod zone;
 pub use zone::*;
 
@@ -239,4 +240,18 @@ pub fn is_fqdn(s: &str) -> bool {
   let last_non_backslash = s.rfind(|c| c != '\\').unwrap_or(0);
 
   (len - last_non_backslash) % 2 == 0
+}
+
+#[test]
+fn test_label() {
+  use dns_protocol::{Label, Message, Flags, Question, ResourceType};
+
+  let label = Label::from("My server");
+  println!("label: {}", label);
+
+  let mut q = [Question::new(label, ResourceType::Ptr, 0)];
+  let msg = Message::new(0, Flags::new(), &mut q, &mut [], &mut [], &mut []);
+  let mut buf = [0; 1024];
+  let len = msg.write(&mut buf).unwrap();
+  println!("msg: {:?}", &buf[..len]);
 }
