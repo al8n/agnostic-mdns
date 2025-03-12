@@ -1,4 +1,4 @@
-use core::{convert::Infallible, error::Error, future::Future, marker::PhantomData, net::IpAddr};
+use core::{error::Error, net::IpAddr};
 
 use std::{
   io,
@@ -10,10 +10,10 @@ use super::{
   invalid_input_err, is_fqdn,
   types::{A, AAAA, Name, PTR, RecordDataRef, RecordRef, SRV, TXT},
 };
-use agnostic_net::runtime::RuntimeLite;
-use dns_protocol::{Label, ResourceType};
+
+use dns_protocol::{Label, ResourceRecord, ResourceType};
 use either::Either;
-use smallvec_wrapper::TinyVec;
+use smallvec_wrapper::{SmallVec, TinyVec};
 use smol_str::{SmolStr, format_smolstr};
 use triomphe::Arc;
 
@@ -38,44 +38,6 @@ pub enum ServiceError {
   #[error("{0} is not a fully qualified domain name")]
   NotFQDN(SmolStr),
 }
-
-/// The interface used to integrate with the server and
-/// to serve records dynamically
-pub trait Zone: Send + Sync + 'static {
-  /// The runtime type
-  type Runtime: RuntimeLite;
-
-  /// The error type of the zone
-  type Error: core::error::Error + Send + Sync + 'static;
-
-  /// Returns DNS records in response to a DNS question.
-  fn records<'a>(
-    &'a self,
-    name: Label<'a>,
-    rt: ResourceType,
-  ) -> impl Future<Output = Result<TinyVec<RecordRef<'a>>, Self::Error>> + Send + 'a;
-}
-
-macro_rules! auto_impl {
-  ($($name:ty),+$(,)?) => {
-    $(
-      impl<Z: Zone> Zone for $name {
-        type Runtime = Z::Runtime;
-        type Error = Z::Error;
-
-        async fn records<'a>(
-          &'a self,
-          name: Label<'a>,
-          rt: ResourceType,
-        ) -> Result<TinyVec<RecordRef<'a>>, Self::Error> {
-          Z::records(self, name, rt).await
-        }
-      }
-    )*
-  };
-}
-
-auto_impl!(std::sync::Arc<Z>, triomphe::Arc<Z>, std::boxed::Box<Z>,);
 
 /// A builder for creating a new [`Service`].
 pub struct ServiceBuilder {
@@ -479,10 +441,7 @@ impl ServiceBuilder {
   // check to ensure that the instance name does not conflict with other instance
   // names, and, if required, select a new name.  There may also be conflicting
   // hostName A/AAAA records.
-  pub async fn finalize<R>(self) -> io::Result<Service<R>>
-  where
-    R: RuntimeLite,
-  {
+  pub fn finalize(self) -> io::Result<Service> {
     let domain = match self.domain {
       Some(domain) if !is_fqdn(domain.as_str()) => {
         return Err(invalid_input_err(ServiceError::NotFQDN(domain)));
@@ -568,13 +527,12 @@ impl ServiceBuilder {
       enum_addr: PTR::new(enum_addr).map_err(invalid_input_err)?,
       ttl: AtomicU32::new(self.ttl),
       srv,
-      _r: PhantomData,
     })
   }
 }
 
 /// Export a named service by implementing a [`Zone`].
-pub struct Service<R> {
+pub struct Service {
   /// Instance name (e.g. "hostService name")
   instance: SmolStr,
   /// Service name (e.g. "_http._tcp.")
@@ -597,41 +555,9 @@ pub struct Service<R> {
   enum_addr: PTR,
   ttl: AtomicU32,
   srv: SRV,
-  _r: PhantomData<R>,
 }
 
-impl<R> Zone for Service<R>
-where
-  R: RuntimeLite,
-{
-  type Runtime = R;
-  type Error = Infallible;
-
-  async fn records<'a>(
-    &'a self,
-    qn: Label<'a>,
-    rt: ResourceType,
-  ) -> Result<TinyVec<RecordRef<'a>>, Infallible> {
-    let enum_addr_label = Label::from(self.enum_addr.name());
-    let service_addr_label = Label::from(self.service_addr.name());
-    let instance_addr_label = Label::from(self.instance_addr.name());
-    let hostname_label = Label::from(self.hostname.as_str());
-    Ok(match () {
-      () if enum_addr_label.eq(&qn) => self
-        .service_enum(qn, rt)
-        .map(|rr| TinyVec::from_iter([rr]))
-        .unwrap_or_default(),
-      () if service_addr_label.eq(&qn) => self.service_records(qn, rt),
-      () if instance_addr_label.eq(&qn) => self.instance_records(qn, rt),
-      () if hostname_label.eq(&qn) && matches!(rt, ResourceType::A | ResourceType::AAAA) => {
-        self.instance_records(qn, rt)
-      }
-      _ => TinyVec::new(),
-    })
-  }
-}
-
-impl<R> Service<R> {
+impl Service {
   /// Returns the instance of the service.
   #[inline]
   pub const fn instance(&self) -> &SmolStr {
@@ -698,73 +624,111 @@ impl<R> Service<R> {
     self.txt.strings()
   }
 
-  fn service_enum<'a>(&'a self, name: Label<'a>, rt: ResourceType) -> Option<RecordRef<'a>> {
-    match rt {
-      ResourceType::Wildcard | ResourceType::Ptr => Some(RecordRef::from_rdata(
-        name,
-        self.ttl(),
-        RecordDataRef::PTR(&self.service_addr),
-      )),
-      _ => None,
+  #[auto_enums::auto_enum(Iterator)]
+  pub(super) fn fetch_answers<'a>(
+    &'a self,
+    qn: Label<'a>,
+    rt: ResourceType,
+  ) -> impl Iterator<Item = ResourceRecord<'a>> + 'a {
+    let enum_addr_label = Label::from(self.enum_addr.name());
+    let service_addr_label = Label::from(self.service_addr.name());
+    let instance_addr_label = Label::from(self.instance_addr.name());
+    let hostname_label = Label::from(self.hostname.as_str());
+
+    match () {
+      () if enum_addr_label.eq(&qn) => self.service_enum(qn, rt),
+      () if service_addr_label.eq(&qn) => self.service_records(qn, rt),
+      () if instance_addr_label.eq(&qn) => self.instance_records(qn, rt),
+      () if hostname_label.eq(&qn) && matches!(rt, ResourceType::A | ResourceType::AAAA) => {
+        self.instance_records(qn, rt)
+      }
+      _ => core::iter::empty(),
     }
   }
 
-  fn service_records<'a>(&'a self, name: Label<'a>, rt: ResourceType) -> TinyVec<RecordRef<'a>> {
+  #[auto_enums::auto_enum(Iterator)]
+  fn service_enum<'a>(
+    &'a self,
+    name: Label<'a>,
+    rt: ResourceType,
+  ) -> impl Iterator<Item = ResourceRecord<'a>> {
+    match rt {
+      ResourceType::Wildcard | ResourceType::Ptr => core::iter::once(ResourceRecord::from(
+        &RecordRef::from_rdata(name, self.ttl(), RecordDataRef::PTR(&self.service_addr)),
+      )),
+      _ => core::iter::empty(),
+    }
+  }
+
+  #[auto_enums::auto_enum(Iterator)]
+  fn service_records<'a>(
+    &'a self,
+    name: Label<'a>,
+    rt: ResourceType,
+  ) -> impl Iterator<Item = ResourceRecord<'a>> {
     match rt {
       ResourceType::Wildcard | ResourceType::Ptr => {
         // Build a PTR response for the service
         let rr = RecordRef::from_rdata(name, self.ttl(), RecordDataRef::PTR(&self.instance_addr));
 
-        let mut recs = TinyVec::from_iter([rr]);
-
         // Get the instance records
-        recs
-          .extend(self.instance_records(self.instance_addr.name().into(), ResourceType::Wildcard));
-        recs
+        core::iter::once(ResourceRecord::from(&rr))
+          .chain(self.instance_records(self.instance_addr.name().into(), ResourceType::Wildcard))
       }
-      _ => TinyVec::new(),
+      _ => core::iter::empty(),
     }
   }
 
-  fn instance_records<'a>(&'a self, name: Label<'a>, rt: ResourceType) -> TinyVec<RecordRef<'a>> {
+  #[auto_enums::auto_enum(Iterator)]
+  fn instance_records<'a>(
+    &'a self,
+    name: Label<'a>,
+    rt: ResourceType,
+  ) -> impl Iterator<Item = ResourceRecord<'a>> {
     match rt {
       ResourceType::Wildcard => {
         // Get the SRV, which includes A and AAAA
-        let mut recs = self.instance_records(self.instance_addr.name().into(), ResourceType::Srv);
+        let recs = self.instance_records(self.instance_addr.name().into(), ResourceType::Srv);
 
         // Add the TXT record
-        recs.extend(self.instance_records(self.instance_addr.name().into(), ResourceType::Txt));
         recs
+          .chain(self.instance_records(self.instance_addr.name().into(), ResourceType::Txt))
+          .collect::<SmallVec<_>>()
+          .into_iter()
       }
-      ResourceType::A => self
-        .ipv4s
-        .iter()
-        .map(|ip| RecordRef::from_rdata(name, self.ttl(), RecordDataRef::A(ip)))
-        .collect(),
-      ResourceType::AAAA => self
-        .ipv6s
-        .iter()
-        .map(|ip| RecordRef::from_rdata(name, self.ttl(), RecordDataRef::AAAA(ip)))
-        .collect(),
+      ResourceType::A => self.ipv4s.iter().map(move |ip| {
+        ResourceRecord::from(&RecordRef::from_rdata(
+          name,
+          self.ttl(),
+          RecordDataRef::A(ip),
+        ))
+      }),
+      ResourceType::AAAA => self.ipv6s.iter().map(move |ip| {
+        ResourceRecord::from(&RecordRef::from_rdata(
+          name,
+          self.ttl(),
+          RecordDataRef::AAAA(ip),
+        ))
+      }),
       ResourceType::Srv => {
         // Create the SRV Record
         let rr = RecordRef::from_rdata(name, self.ttl(), RecordDataRef::SRV(&self.srv));
 
-        let mut recs = TinyVec::from_iter([rr]);
-
-        // Add the A record
-        recs.extend(self.instance_records(self.instance_addr.name().into(), ResourceType::A));
-
-        // Add the AAAA record
-        recs.extend(self.instance_records(self.instance_addr.name().into(), ResourceType::AAAA));
+        let recs = core::iter::once(ResourceRecord::from(&rr));
         recs
+          // Add the A record
+          .chain(self.instance_records(self.instance_addr.name().into(), ResourceType::A))
+          // Add the AAAA record
+          .chain(self.instance_records(self.instance_addr.name().into(), ResourceType::AAAA))
+          .collect::<SmallVec<_>>()
+          .into_iter()
       }
       ResourceType::Txt => {
         // Build a TXT response for the instance
         let rr = RecordRef::from_rdata(name, self.ttl(), RecordDataRef::TXT(&self.txt));
-        TinyVec::from_iter([rr])
+        core::iter::once(ResourceRecord::from(&rr))
       }
-      _ => TinyVec::new(),
+      _ => core::iter::empty(),
     }
   }
 }

@@ -6,13 +6,12 @@ use futures::StreamExt;
 use smol_str::SmolStr;
 
 use crate::{
-  Service,
+  ServerOptions,
   client::{QueryParam, query_with},
-  server::{Server, ServerOptions},
-  tests::make_service,
+  service::Service,
+  tests::{make_service, make_service_with_service_name},
+  worksteal::Server,
 };
-
-use super::make_service_with_service_name;
 
 macro_rules! test_suites {
   ($runtime:ident {
@@ -22,7 +21,7 @@ macro_rules! test_suites {
       paste::paste! {
         #[test]
         fn [< $runtime _ $name >]() {
-          $crate::tests::[< $runtime _run >]($name::<agnostic_net::[< $runtime >]::Net>());
+          $crate::worksteal::tests::[< $runtime _run >]($name::<agnostic_net::[< $runtime >]::Net>());
         }
       }
     )*
@@ -30,8 +29,8 @@ macro_rules! test_suites {
 }
 
 async fn server_start_stop<N: Net>() {
-  let s = make_service::<N::Runtime>().await;
-  let serv = Server::<N, Service<N::Runtime>>::new(s, ServerOptions::default())
+  let s = make_service();
+  let serv = Server::<N, Service>::new(s, ServerOptions::default())
     .await
     .unwrap();
 
@@ -59,8 +58,8 @@ async fn server_start_stop<N: Net>() {
 }
 
 async fn server_lookup<N: Net>() {
-  let s = make_service_with_service_name("_foobar._tcp").await;
-  let serv = Server::<N, Service<N::Runtime>>::new(s, ServerOptions::default())
+  let s = make_service_with_service_name("_foobar._tcp");
+  let serv = Server::<N, Service>::new(s, ServerOptions::default())
     .await
     .unwrap();
 

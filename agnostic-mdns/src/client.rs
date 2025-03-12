@@ -847,7 +847,7 @@ impl<N: Net> Client<N> {
 
     // Establish unicast connections
     let mut uconn4 = if v4 {
-      match unicast_udp4_socket::<N>(ipv4_interface) {
+      match unicast_udp4_socket(ipv4_interface).and_then(<N::UdpSocket as TryFrom<_>>::try_from) {
         Err(e) => {
           tracing::error!(err=%e, "mdns client: failed to bind to udp4 port");
           None
@@ -862,7 +862,7 @@ impl<N: Net> Client<N> {
     };
 
     let mut uconn6 = if v6 {
-      match unicast_udp6_socket::<N>(ipv6_interface) {
+      match unicast_udp6_socket(ipv6_interface).and_then(<N::UdpSocket as TryFrom<_>>::try_from) {
         Err(e) => {
           tracing::error!(err=%e, "mdns client: failed to bind to udp6 port");
           None
@@ -878,7 +878,9 @@ impl<N: Net> Client<N> {
 
     // Establish multicast connections
     let mut mconn4 = if v4 {
-      match multicast_udp4_socket::<N>(ipv4_interface, MDNS_PORT) {
+      match multicast_udp4_socket(ipv4_interface, MDNS_PORT)
+        .and_then(<N::UdpSocket as TryFrom<_>>::try_from)
+      {
         Err(e) => {
           tracing::error!(err=%e, "mdns client: failed to bind to udp4 port");
           None
@@ -893,7 +895,9 @@ impl<N: Net> Client<N> {
     };
 
     let mut mconn6 = if v6 {
-      match multicast_udp6_socket::<N>(ipv6_interface, MDNS_PORT) {
+      match multicast_udp6_socket(ipv6_interface, MDNS_PORT)
+        .and_then(<N::UdpSocket as TryFrom<_>>::try_from)
+      {
         Err(e) => {
           tracing::error!(err=%e, "mdns client: failed to bind to udp6 port");
           None

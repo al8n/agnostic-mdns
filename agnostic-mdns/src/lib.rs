@@ -1,4 +1,4 @@
-#![doc = include_str!("../README.md")]
+#![doc = include_str!("../../README.md")]
 // #![forbid(unsafe_code)]
 #![deny(missing_docs)]
 #![allow(unexpected_cfgs)]
@@ -26,17 +26,153 @@ const MAX_INLINE_PACKET_SIZE: usize = 512;
 
 /// mDNS client
 mod client;
-pub use client::*;
-
+mod future;
 /// mDNS server
 mod server;
-pub use server::*;
-
 mod types;
 
+/// synchronous mDNS implementation
+pub mod sync;
+
+/// Generic asynchronous mDNS implementation for work stealing runtimes
+#[cfg(any(feature = "tokio", feature = "async-std", feature = "smol",))]
+#[cfg_attr(
+  docsrs,
+  doc(cfg(any(feature = "tokio", feature = "async-std", feature = "smol")))
+)]
+pub mod worksteal;
+
+/// A builtin service that can be used with the mDNS server
+pub mod service;
+
+pub use client::*;
 pub use iprobe as netprobe;
 pub use smol_str::{SmolStr, format_smolstr};
 pub use types::*;
+
+/// The options for [`Server`].
+#[derive(Clone, Debug)]
+pub struct ServerOptions {
+  pub(crate) ipv4_interface: Option<Ipv4Addr>,
+  pub(crate) ipv6_interface: Option<u32>,
+  pub(crate) log_empty_responses: bool,
+}
+
+impl Default for ServerOptions {
+  #[inline]
+  fn default() -> Self {
+    Self::new()
+  }
+}
+
+impl ServerOptions {
+  /// Returns a new instance of [`ServerOptions`].
+  #[inline]
+  pub const fn new() -> Self {
+    Self {
+      ipv4_interface: None,
+      ipv6_interface: None,
+      log_empty_responses: false,
+    }
+  }
+
+  /// Returns the Ipv4 interface to bind the multicast listener to.
+  ///
+  /// ## Example
+  ///
+  /// ```rust
+  /// use agnostic_mdns::ServerOptions;
+  /// use std::net::Ipv4Addr;
+  ///
+  /// let opts = ServerOptions::new().with_ipv4_interface(Ipv4Addr::new(192, 168, 1, 1));
+  /// assert_eq!(opts.ipv4_interface(), Some(&Ipv4Addr::new(192, 168, 1, 1)));
+  /// ```
+  #[inline]
+  pub const fn ipv4_interface(&self) -> Option<&Ipv4Addr> {
+    self.ipv4_interface.as_ref()
+  }
+
+  /// Sets the IPv4 interface to bind the multicast listener to.
+  ///
+  /// ## Example
+  ///
+  /// ```rust
+  /// use agnostic_mdns::ServerOptions;
+  /// use std::net::Ipv4Addr;
+  ///
+  /// let opts = ServerOptions::new().with_ipv4_interface(Ipv4Addr::new(192, 168, 1, 1));
+  /// ```
+  #[inline]
+  pub fn with_ipv4_interface(mut self, iface: Ipv4Addr) -> Self {
+    self.ipv4_interface = Some(iface);
+    self
+  }
+
+  /// Returns the Ipv6 interface to bind the multicast listener to.
+  ///
+  /// ## Example
+  ///
+  /// ```rust
+  /// use agnostic_mdns::ServerOptions;
+  ///
+  /// let opts = ServerOptions::new().with_ipv6_interface(1);
+  /// assert_eq!(opts.ipv6_interface(), Some(1));
+  /// ```
+  #[inline]
+  pub const fn ipv6_interface(&self) -> Option<u32> {
+    self.ipv6_interface
+  }
+
+  /// Sets the IPv6 interface to bind the multicast listener to.
+  ///
+  /// ## Example
+  ///
+  /// ```rust
+  /// use agnostic_mdns::ServerOptions;
+  ///
+  /// let opts = ServerOptions::new().with_ipv6_interface(1);
+  /// ```
+  #[inline]
+  pub fn with_ipv6_interface(mut self, index: u32) -> Self {
+    self.ipv6_interface = Some(index);
+    self
+  }
+
+  /// Sets whether the server should print an informative message
+  /// when there is an mDNS query for which the server has no response.
+  ///
+  /// Default is `false`.
+  ///
+  /// ## Example
+  ///
+  /// ```rust
+  /// use agnostic_mdns::ServerOptions;
+  ///
+  /// let opts = ServerOptions::new().with_log_empty_responses(true);
+  /// assert_eq!(opts.log_empty_responses(), true);
+  /// ```
+  #[inline]
+  pub fn with_log_empty_responses(mut self, log_empty_responses: bool) -> Self {
+    self.log_empty_responses = log_empty_responses;
+    self
+  }
+
+  /// Returns whether the server should print an informative message
+  /// when there is an mDNS query for which the server has no response.
+  ///
+  /// ## Example
+  ///
+  /// ```rust
+  /// use agnostic_mdns::ServerOptions;
+  ///
+  /// let opts = ServerOptions::new().with_log_empty_responses(true);
+  /// assert_eq!(opts.log_empty_responses(), true);
+  /// ```
+  #[inline]
+  pub const fn log_empty_responses(&self) -> bool {
+    self.log_empty_responses
+  }
+}
 
 /// Types for `tokio` runtime
 #[cfg(feature = "tokio")]
@@ -44,15 +180,12 @@ pub use types::*;
 pub mod tokio {
   use std::io;
 
-  use super::{Lookup, QueryParam};
+  use super::{Lookup, QueryParam, service::Service};
   pub use agnostic_net::{runtime::tokio::TokioRuntime as Runtime, tokio::Net};
   use smol_str::SmolStr;
 
-  /// A service that can be used with `tokio` runtime
-  pub type Service = super::Service<Runtime>;
-
   /// A server that can be used with `tokio` runtime
-  pub type Server = super::server::Server<Net, Service>;
+  pub type Server = super::worksteal::Server<Net, Service>;
 
   /// Looks up a given service, in a domain, waiting at most
   /// for a timeout before finishing the query. The results are streamed
@@ -75,17 +208,14 @@ pub mod tokio {
 #[cfg(feature = "smol")]
 #[cfg_attr(docsrs, doc(cfg(feature = "smol")))]
 pub mod smol {
-  use super::{Lookup, QueryParam};
+  use super::{Lookup, QueryParam, service::Service};
   use std::io;
 
   pub use agnostic_net::{runtime::smol::SmolRuntime as Runtime, smol::Net};
   use smol_str::SmolStr;
 
-  /// A service that can be used with `smol` runtime
-  pub type Service = super::Service<Runtime>;
-
   /// A server that can be used with `smol` runtime
-  pub type Server = super::server::Server<Net, Service>;
+  pub type Server = super::worksteal::Server<Net, Service>;
 
   /// Looks up a given service, in a domain, waiting at most
   /// for a timeout before finishing the query. The results are streamed
@@ -108,17 +238,14 @@ pub mod smol {
 #[cfg(feature = "async-std")]
 #[cfg_attr(docsrs, doc(cfg(feature = "async-std")))]
 pub mod async_std {
-  use super::{Lookup, QueryParam};
+  use super::{Lookup, QueryParam, service::Service};
   use std::io;
 
   pub use agnostic_net::{async_std::Net, runtime::async_std::AsyncStdRuntime as Runtime};
   use smol_str::SmolStr;
 
-  /// A service that can be used with `async-std` runtime
-  pub type Service = super::Service<Runtime>;
-
   /// A server that can be used with `async-std` runtime
-  pub type Server = super::server::Server<Net, Service>;
+  pub type Server = super::worksteal::Server<Net, Service>;
 
   /// Looks up a given service, in a domain, waiting at most
   /// for a timeout before finishing the query. The results are streamed
@@ -137,13 +264,27 @@ pub mod async_std {
   }
 }
 
-pub use agnostic_net as net;
-
-mod endpoint;
-mod zone;
-pub use zone::*;
-
 mod utils;
+
+/// Returns `true` if a domain name is fully qualified domain name
+#[inline]
+pub fn is_fqdn(s: &str) -> bool {
+  let len = s.len();
+  if s.is_empty() || !s.ends_with('.') {
+    return false;
+  }
+
+  let s = &s[..len - 1];
+
+  if s.is_empty() || !s.ends_with('\\') {
+    return true;
+  }
+
+  // Count backslashes at the end
+  let last_non_backslash = s.rfind(|c| c != '\\').unwrap_or(0);
+
+  (len - last_non_backslash) % 2 == 0
+}
 
 /// Returns the hostname of the current machine.
 ///
@@ -222,29 +363,55 @@ where
   io::Error::new(io::ErrorKind::InvalidData, e)
 }
 
-/// Returns `true` if a domain name is fully qualified domain name
-#[inline]
-pub fn is_fqdn(s: &str) -> bool {
-  let len = s.len();
-  if s.is_empty() || !s.ends_with('.') {
-    return false;
+#[allow(clippy::large_enum_variant)]
+enum Buffer {
+  Heap(Vec<u8>),
+  Stack([u8; MAX_INLINE_PACKET_SIZE]),
+}
+
+impl Buffer {
+  fn zerod(cap: usize) -> Self {
+    if cap <= MAX_INLINE_PACKET_SIZE {
+      Buffer::Stack([0; MAX_INLINE_PACKET_SIZE])
+    } else {
+      Buffer::Heap(vec![0; cap])
+    }
   }
+}
 
-  let s = &s[..len - 1];
-
-  if s.is_empty() || !s.ends_with('\\') {
-    return true;
+impl From<usize> for Buffer {
+  fn from(size: usize) -> Self {
+    if size <= MAX_INLINE_PACKET_SIZE {
+      Buffer::Stack([0; MAX_INLINE_PACKET_SIZE])
+    } else {
+      Buffer::Heap(vec![0; size])
+    }
   }
+}
 
-  // Count backslashes at the end
-  let last_non_backslash = s.rfind(|c| c != '\\').unwrap_or(0);
+impl core::ops::Deref for Buffer {
+  type Target = [u8];
 
-  (len - last_non_backslash) % 2 == 0
+  fn deref(&self) -> &[u8] {
+    match self {
+      Buffer::Heap(v) => v,
+      Buffer::Stack(v) => v,
+    }
+  }
+}
+
+impl core::ops::DerefMut for Buffer {
+  fn deref_mut(&mut self) -> &mut [u8] {
+    match self {
+      Buffer::Heap(v) => v,
+      Buffer::Stack(v) => v,
+    }
+  }
 }
 
 #[test]
 fn test_label() {
-  use dns_protocol::{Label, Message, Flags, Question, ResourceType};
+  use dns_protocol::{Flags, Label, Message, Question, ResourceType};
 
   let label = Label::from("My server");
   println!("label: {}", label);
