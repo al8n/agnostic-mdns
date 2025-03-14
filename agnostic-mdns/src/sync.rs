@@ -1,5 +1,5 @@
 use core::convert::Infallible;
-use dns_protocol::{Label, ResourceRecord, ResourceType};
+use mdns_proto::{Label, ResourceRecord, ResourceType};
 
 use crate::service::Service;
 

@@ -6,7 +6,7 @@ use std::{
 use smol_str::SmolStr;
 use triomphe::Arc;
 
-use dns_protocol::{Label, ResourceRecord, ResourceType, Serialize};
+use mdns_proto::{Label, ResourceRecord, ResourceType, Serialize};
 
 use crate::ProtoError;
 

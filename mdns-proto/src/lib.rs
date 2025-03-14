@@ -1,13 +1,37 @@
-use core::marker::PhantomData;
-use dns_protocol::{Error as ProtoError, Flags, Message, Opcode, Question, ResponseCode};
+#![cfg_attr(not(feature = "std"), no_std)]
+
+use core::{
+  marker::PhantomData,
+  net::{Ipv4Addr, Ipv6Addr, SocketAddr},
+};
+
+use error::*;
+
+pub use dns_protocol::{
+  Cursor, Deserialize, Flags, Header, Label, LabelSegment, Message, MessageType, Opcode, Question,
+  ResourceRecord, ResourceType, ResponseCode, Serialize,
+};
+#[cfg(feature = "slab")]
+pub use slab;
+pub use srv::*;
+pub use txt::*;
+
+/// The error type for the mDNS protocol
+pub mod error;
+
+mod srv;
+mod txt;
 
 const FORCE_UNICAST_RESPONSES: bool = false;
 
+/// An endpoint for handling mDNS queries and responses.
+///
+/// This `Endpoint` is using a slab for managing connections and queries.
 #[cfg(feature = "slab")]
-pub use slab;
+#[cfg_attr(docsrs, doc(cfg(feature = "slab")))]
+pub type SlabEndpoint = Endpoint<slab::Slab<slab::Slab<u16>>, slab::Slab<u16>>;
 
-pub use dns_protocol as proto;
-
+#[derive(Clone, Copy, PartialEq, Eq, derive_more::IsVariant)]
 enum Side {
   Client,
   Server,
@@ -20,35 +44,6 @@ impl core::fmt::Display for Side {
       Side::Server => write!(f, "server"),
     }
   }
-}
-
-/// The error type for the server.
-#[derive(Debug, thiserror::Error)]
-pub enum ServerError<S, Q> {
-  /// The server is full and cannot hold any more connections.
-  #[error(transparent)]
-  Connection(S),
-  /// The connection is full and cannot hold any more queries.
-  #[error(transparent)]
-  Query(Q),
-  /// The connection is not found.
-  #[error("connection not found: {0:?}")]
-  ConnectionNotFound(ConnectionHandle),
-  /// The query is not found.
-  #[error("query {qid} not found on connection {cid}", qid = _0.qid, cid = _0.cid)]
-  QueryNotFound(QueryHandle),
-  /// The error occurred while encoding/decoding the message.
-  #[error(transparent)]
-  Proto(#[from] ProtoError),
-  /// Returned when the a query has an invalid opcode.
-  #[error("invalid opcode: {0:?}")]
-  InvalidOpcode(Opcode),
-  /// Returned when the a query has an invalid response code.
-  #[error("invalid response code: {0:?}")]
-  InvalidResponseCode(ResponseCode),
-  /// Returned when a query with a high truncated bit is received.
-  #[error("support for DNS requests with high truncated bit not implemented")]
-  TrancatedQuery,
 }
 
 /// Internal identifier for a `Connection` currently associated with an endpoint
@@ -101,7 +96,7 @@ impl QueryHandle {
 }
 
 /// Pre-allocated storage for a uniform data type.
-pub trait Slab<V> {
+pub trait Pool<V> {
   /// The type of the errors that can occur when interacting with the slab.
   type Error: core::error::Error;
 
@@ -283,14 +278,6 @@ impl Outgoing {
   }
 }
 
-/// Events sent from a Connection to an Endpoint
-pub enum EndpointEvent<'container, 'innards> {
-  Incoming(Incoming<'container, 'innards>),
-  Response(Response<'innards>),
-  DrainConnection(ConnectionHandle),
-  DrainQuery(QueryHandle),
-}
-
 /// Events sent from an Endpoint to a Connection
 pub enum ConnectionEvent<'container, 'innards, Q> {
   Query(Query<'container, 'innards>),
@@ -302,6 +289,14 @@ pub enum ConnectionEvent<'container, 'innards, Q> {
     /// The closed connection handle.
     connection_handle: ConnectionHandle,
   },
+}
+
+/// Events reacted to incoming responses
+pub enum ResponseEvent<'a> {
+  /// Service entry is complete
+  Complete(ServiceEntry<'a>),
+  /// The question should retry
+  Retry(Question<'a>),
 }
 
 /// The main entry point to the library
@@ -316,8 +311,8 @@ pub struct Endpoint<S, Q> {
 
 impl<S, Q> Endpoint<S, Q>
 where
-  S: Slab<Q>,
-  Q: Slab<u16>,
+  S: Pool<Q>,
+  Q: Pool<u16>,
 {
   /// Create a new server endpoint
   pub fn server() -> Self {
@@ -371,52 +366,35 @@ where
   }
 
   /// Accept a new connection
-  pub fn accept(&mut self) -> Result<ConnectionHandle, ServerError<S::Error, Q::Error>> {
+  pub fn accept(&mut self) -> Result<ConnectionHandle, Error<S::Error, Q::Error>> {
+    self.check_direction(Side::Server)?;
+
     let key = self
       .connections
       .insert(Q::new())
-      .map_err(ServerError::Connection)?;
+      .map_err(Error::Connection)?;
     Ok(ConnectionHandle(key))
   }
 
-  /// Process `EndpointEvent`s emitted from related `Connection`s
-  ///
-  /// In turn, processing this event may return a `ConnectionEvent` for the same `Connection`.
-  ///
-  /// # Errors
-  ///
-  /// - [`Error::Proto(ProtoError::NotEnoughReadBytes)`] if the buffer is not large enough to hold the entire structure.
-  ///   You may need to read more data before calling this function again.
-  /// - [`Error::Proto(ProtoError::NotEnoughWriteSpace)`] if the buffers provided are not large enough to hold the
-  ///   entire structure. You may need to allocate larger buffers before calling this function.
-  pub fn handle_event<'container, 'innards>(
-    &mut self,
-    event: EndpointEvent<'container, 'innards>,
-  ) -> Result<ConnectionEvent<'container, 'innards, Q>, ServerError<S::Error, Q::Error>> {
-    match event {
-      EndpointEvent::Incoming(Incoming {
-        connection_handle,
-        message,
-      }) => self
-        .handle_incoming(connection_handle, message)
-        .map(ConnectionEvent::Query),
-      EndpointEvent::Response(Response {
-        query_handle,
-        question,
-      }) => self
-        .handle_response(query_handle, question)
-        .map(ConnectionEvent::Outgoing),
-      EndpointEvent::DrainConnection(ch) => self.handle_drain_connection(ch),
-      EndpointEvent::DrainQuery(qh) => self.handle_drain_query(qh),
-    }
+  /// Open a new connection
+  pub fn connect(&mut self) -> Result<ConnectionHandle, Error<S::Error, Q::Error>> {
+    self.check_direction(Side::Client)?;
+
+    let key = self
+      .connections
+      .insert(Q::new())
+      .map_err(Error::Connection)?;
+    Ok(ConnectionHandle(key))
   }
 
-  /// Handle an incoming message
-  pub fn handle_incoming<'container, 'innards>(
+  /// Handle an incoming query message
+  pub fn recv_query<'container, 'innards>(
     &mut self,
     ch: ConnectionHandle,
     msg: Message<'container, 'innards>,
-  ) -> Result<Query<'container, 'innards>, ServerError<S::Error, Q::Error>> {
+  ) -> Result<Query<'container, 'innards>, Error<S::Error, Q::Error>> {
+    self.check_direction(Side::Server)?;
+
     let id = msg.id();
     let flags = msg.flags();
     let opcode = flags.opcode();
@@ -428,7 +406,7 @@ where
       // than zero MUST be silently ignored."  Note: OpcodeQuery == 0
       #[cfg(feature = "tracing")]
       tracing::error!(type=%self.side, opcode = ?opcode, "mdns endpoint: received query with non-zero OpCode");
-      return Err(ServerError::InvalidOpcode(opcode));
+      return Err(Error::InvalidOpcode(opcode));
     }
 
     let resp_code = flags.response_code();
@@ -438,7 +416,7 @@ where
       // non-zero Response Codes MUST be silently ignored."
       #[cfg(feature = "tracing")]
       tracing::error!(type=%self.side, rcode = ?resp_code, "mdns endpoint: received query with non-zero response_code");
-      return Err(ServerError::InvalidResponseCode(resp_code));
+      return Err(Error::InvalidResponseCode(resp_code));
     }
 
     // TODO(reddaly): Handle "TC (Truncated) Bit":
@@ -452,23 +430,25 @@ where
       tracing::error!(
         type=%self.side, "mdns endpoint: support for DNS requests with high truncated bit not implemented"
       );
-      return Err(ServerError::TrancatedQuery);
+      return Err(Error::TrancatedQuery);
     }
 
     if let Some(conn) = self.connections.get_mut(ch.0) {
-      let qid = conn.insert(id).map_err(ServerError::Query)?;
+      let qid = conn.insert(id).map_err(Error::Query)?;
       return Ok(Query::new(msg, QueryHandle::new(ch.into(), qid, id)));
     }
 
-    Err(ServerError::ConnectionNotFound(ch))
+    Err(Error::ConnectionNotFound(ch))
   }
 
   /// Handle a response
-  pub fn handle_response(
+  pub fn prepare_response(
     &mut self,
     qh: QueryHandle,
     question: Question<'_>,
-  ) -> Result<Outgoing, ServerError<S::Error, Q::Error>> {
+  ) -> Result<Outgoing, Error<S::Error, Q::Error>> {
+    self.check_direction(Side::Server)?;
+
     let mut flags = Flags::new();
     flags
       .set_response_code(ResponseCode::NoError)
@@ -498,25 +478,172 @@ where
     Ok(Outgoing::new(flags, unicast, id))
   }
 
+  /// Prepare a query for client to send out
+  pub fn prepare_query<'innards>(
+    &mut self,
+    name: Label<'innards>,
+    unicast_response: bool,
+  ) -> Result<Question<'innards>, Error<S::Error, Q::Error>> {
+    self.check_direction(Side::Client)?;
+
+    // RFC 6762, section 18.12.  Repurposing of Top Bit of qclass in Query
+    // Section
+    //
+    // In the Query Section of a Multicast DNS query, the top bit of the qclass
+    // field is used to indicate that unicast responses are preferred for this
+    // particular question.  (See Section 5.4.)
+    let qclass = if unicast_response {
+      let base: u16 = 1;
+      base | (1 << 15)
+    } else {
+      1
+    };
+
+    Ok(Question::new(name, ResourceType::Ptr, qclass))
+  }
+
+  /// Handle an incoming response
+  pub fn recv_response<'container, 'innards, C, A, M>(
+    &mut self,
+    from: SocketAddr,
+    cache: &mut InprogressCache<'innards, C, A>,
+    msg: Message<'container, 'innards>,
+  ) -> Result<impl Iterator<Item = ResponseEvent<'innards>>, Error<S::Error, Q::Error>>
+  where
+    C: for<'b> Cache<Label<'b>, ServiceEntry<'b>>,
+    A: for<'b> Cache<Label<'b>, Label<'b>>,
+    M: for<'b> Cache<Label<'b>, ()>,
+  {
+    self.check_direction(Side::Client)?;
+
+    let mut modified_entries = M::new();
+
+    for record in msg.answers().iter().chain(msg.additional().iter()) {
+      let record_name = record.name();
+      match record.ty() {
+        ResourceType::A => {
+          let src = record.data();
+          let res: Result<[u8; 4], _> = src.try_into();
+
+          match res {
+            Ok(ip) => {
+              let entry = cache.get_or_create_entry(&record_name);
+              entry.ipv4 = Some(Ipv4Addr::from(ip));
+              modified_entries.insert(record_name, ());
+            }
+            Err(_) => {
+              #[cfg(feature = "tracing")]
+              tracing::error!(type=%self.side, "mdns endpoint: invalid A record data");
+              return Err(proto_error_parse("A").into());
+            }
+          }
+        }
+        ResourceType::AAAA => {
+          let src = record.data();
+          let res: Result<[u8; 16], _> = src.try_into();
+
+          match res {
+            Ok(ip) => {
+              let entry = cache.get_or_create_entry(&record_name);
+              let ip = Ipv6Addr::from(ip);
+              entry.ipv6 = Some(ip);
+
+              // link-local IPv6 addresses must be qualified with a zone (interface). Zone is
+              // specific to this machine/network-namespace and so won't be carried in the
+              // mDNS message itself. We borrow the zone from the source address of the UDP
+              // packet, as the link-local address should be valid on that interface.
+              if Ipv6AddrExt::is_unicast_link_local(&ip) || ip.is_multicast_link_local() {
+                if let SocketAddr::V6(addr) = from {
+                  entry.zone = Some(addr.scope_id());
+                }
+              }
+
+              modified_entries.insert(record_name, ());
+            }
+            Err(_) => {
+              #[cfg(feature = "tracing")]
+              tracing::error!(type=%self.side, "mdns endpoint: invalid AAAA record data");
+              return Err(proto_error_parse("AAAA").into());
+            }
+          }
+        }
+        ResourceType::Ptr => {
+          cache.get_or_create_entry(&record_name);
+          modified_entries.insert(record_name, ());
+        }
+        ResourceType::Srv => {
+          let data = record.data();
+          let srv = Srv::from_bytes(data)?;
+
+          // Check for a target mismatch
+          let target = srv.target();
+          if target != record_name {
+            cache.create_alias(&record_name, &target);
+          }
+
+          // Update the entry
+          let entry = cache.get_or_create_entry(&record_name);
+          entry.host = target;
+          entry.port = srv.port();
+          modified_entries.insert(record_name, ());
+        }
+        ResourceType::Txt => {
+          let data = record.data();
+          let entry = cache.get_or_create_entry(&record_name);
+          entry.txts = Txt::from_bytes(data, 0, data.len());
+          entry.has_txt = true;
+          modified_entries.insert(record_name, ());
+        }
+        _ => continue,
+      }
+    }
+
+    // Process all modified entries
+    Ok(modified_entries.into_iter().filter_map(|(name, _)| {
+      let canonical_name = cache.resolve_name(&name);
+
+      if let Some(entry) = cache.entries.get_mut(&canonical_name) {
+        if entry.complete() && !entry.sent {
+          entry.sent = true;
+          return Some(ResponseEvent::Complete(*entry));
+        } else if !entry.sent {
+          // Fire off a node-specific query for incomplete entries
+
+          // RFC 6762, section 18.12.  Repurposing of Top Bit of qclass in Query
+          // Section
+          //
+          // In the Query Section of a Multicast DNS query, the top bit of the qclass
+          // field is used to indicate that unicast responses are preferred for this
+          // particular question.  (See Section 5.4.)
+          let question = Question::new(name, ResourceType::Ptr, 1);
+
+          return Some(ResponseEvent::Retry(question));
+        }
+      }
+
+      None
+    }))
+  }
+
   /// Handle a query drain event
-  pub fn handle_drain_query<'container, 'innards>(
+  pub fn drain_query<'container, 'innards>(
     &mut self,
     qh: QueryHandle,
-  ) -> Result<ConnectionEvent<'container, 'innards, Q>, ServerError<S::Error, Q::Error>> {
+  ) -> Result<ConnectionEvent<'container, 'innards, Q>, Error<S::Error, Q::Error>> {
     match self.connections.get_mut(qh.cid) {
       Some(q) => match q.try_remove(qh.qid) {
         Some(_) => Ok(ConnectionEvent::QueryCompleted(qh)),
-        None => Err(ServerError::QueryNotFound(qh)),
+        None => Err(Error::QueryNotFound(qh)),
       },
-      None => Err(ServerError::ConnectionNotFound(ConnectionHandle(qh.cid))),
+      None => Err(Error::ConnectionNotFound(ConnectionHandle(qh.cid))),
     }
   }
 
   /// Handle a connection drain event
-  pub fn handle_drain_connection<'container, 'innards>(
+  pub fn drain_connection<'container, 'innards>(
     &mut self,
     ch: ConnectionHandle,
-  ) -> Result<ConnectionEvent<'container, 'innards, Q>, ServerError<S::Error, Q::Error>> {
+  ) -> Result<ConnectionEvent<'container, 'innards, Q>, Error<S::Error, Q::Error>> {
     match self.connections.try_remove(ch.into()) {
       Some(queries) => {
         #[cfg(feature = "tracing")]
@@ -533,13 +660,263 @@ where
           connection_handle: ch,
         })
       }
-      None => Err(ServerError::ConnectionNotFound(ch)),
+      None => Err(Error::ConnectionNotFound(ch)),
+    }
+  }
+
+  #[inline]
+  fn check_direction(&self, side: Side) -> Result<(), Error<S::Error, Q::Error>> {
+    if self.side.ne(&side) {
+      return Err(Error::WrongDirection);
+    }
+    Ok(())
+  }
+}
+
+/// Returned after we query for a service.
+#[derive(Debug, Clone, Copy)]
+pub struct ServiceEntry<'a> {
+  name: Label<'a>,
+  host: Label<'a>,
+  port: u16,
+  ipv4: Option<Ipv4Addr>,
+  ipv6: Option<Ipv6Addr>,
+  zone: Option<u32>,
+  txts: Txt<'a, 'a>,
+  has_txt: bool,
+  sent: bool,
+}
+
+impl Default for ServiceEntry<'_> {
+  #[inline]
+  fn default() -> Self {
+    Self {
+      name: Label::default(),
+      host: Label::default(),
+      port: 0,
+      ipv4: None,
+      ipv6: None,
+      zone: None,
+      has_txt: false,
+      sent: false,
+      txts: Txt::default(),
     }
   }
 }
 
+impl<'a> ServiceEntry<'a> {
+  fn complete(&self) -> bool {
+    (self.ipv4.is_some() || self.ipv6.is_some()) && self.port != 0 && self.has_txt
+  }
+
+  #[inline]
+  fn with_name(mut self, name: Label<'a>) -> Self {
+    self.name = name;
+    self
+  }
+
+  /// Returns the name of the service.
+  #[inline]
+  pub const fn name(&self) -> &Label<'a> {
+    &self.name
+  }
+
+  /// Returns the host of the service.
+  #[inline]
+  pub const fn host(&self) -> &Label<'a> {
+    &self.host
+  }
+
+  /// Returns the port of the service.
+  #[inline]
+  pub const fn port(&self) -> u16 {
+    self.port
+  }
+
+  /// Returns the IPv4 address of the service, if any.
+  #[inline]
+  pub const fn ipv4(&self) -> Option<&Ipv4Addr> {
+    self.ipv4.as_ref()
+  }
+
+  /// Returns the IPv6 address of the service, if any.
+  #[inline]
+  pub const fn ipv6(&self) -> Option<&Ipv6Addr> {
+    self.ipv6.as_ref()
+  }
+
+  /// Returns the zone of the service, if any.
+  #[inline]
+  pub const fn zone(&self) -> Option<u32> {
+    self.zone
+  }
+
+  /// Returns the TXT record of the service.
+  ///
+  /// See [`Txt`] for more information.
+  #[inline]
+  pub const fn txt(&self) -> &Txt<'a, 'a> {
+    &self.txts
+  }
+}
+
+/// Track the state of service entries and their aliases for a single mDNS query.
+pub struct InprogressCache<'a, C, A> {
+  // The actual entries being built
+  entries: C,
+  // Maps alias names to their canonical name
+  aliases: A,
+  _m: PhantomData<&'a ()>,
+}
+
+impl<C, A> Default for InprogressCache<'_, C, A>
+where
+  C: Default,
+  A: Default,
+{
+  #[inline]
+  fn default() -> Self {
+    Self {
+      entries: C::default(),
+      aliases: A::default(),
+      _m: PhantomData,
+    }
+  }
+}
+
+impl<'a, C, A> InprogressCache<'a, C, A>
+where
+  C: for<'b> Cache<Label<'b>, ServiceEntry<'b>>,
+  A: for<'b> Cache<Label<'b>, Label<'b>>,
+{
+  /// Create a new inprogress cache for a query
+  pub fn new() -> Self {
+    Self {
+      entries: C::new(),
+      aliases: A::new(),
+      _m: PhantomData,
+    }
+  }
+
+  // Get the canonical name for a given name (following aliases if needed)
+  fn resolve_name(&self, name: &Label<'a>) -> Label<'a> {
+    let mut current = name;
+    let mut seen = A::new();
+
+    while let Some(target) = self.aliases.get(current) {
+      if seen.contains_key(target) {
+        // Circular reference detected, break the cycle
+        break;
+      }
+      seen.insert(*current, Label::default());
+      current = target;
+    }
+
+    *current
+  }
+
+  // Get a mutable reference to an entry, creating it if it doesn't exist
+  fn get_or_create_entry(&mut self, name: &Label<'a>) -> &mut ServiceEntry {
+    let canonical_name = self.resolve_name(name);
+
+    if !self.entries.contains_key(&canonical_name) {
+      let builder = ServiceEntry::default().with_name(canonical_name);
+      self.entries.insert(canonical_name, builder);
+    }
+
+    self.entries.get_mut(&canonical_name).unwrap()
+  }
+
+  // Create an alias from one name to another
+  fn create_alias(&mut self, from: &Label<'a>, to: &Label<'a>) {
+    let canonical_to = self.resolve_name(to);
+
+    // If the 'from' exists as an entry, merge it into 'to'
+    if let Some(from_entry) = self.entries.remove(from) {
+      let to_entry = self.get_or_create_entry(&canonical_to);
+
+      // Merge the entries, keeping non-None values from the original entry
+      if to_entry.port == 0 {
+        to_entry.port = from_entry.port;
+      }
+
+      if to_entry.ipv4.is_none() {
+        to_entry.ipv4 = from_entry.ipv4;
+      }
+
+      if to_entry.ipv6.is_none() {
+        to_entry.ipv6 = from_entry.ipv6;
+        to_entry.zone = from_entry.zone;
+      }
+
+      if !to_entry.has_txt {
+        to_entry.has_txt = from_entry.has_txt;
+        to_entry.txts = from_entry.txts;
+      }
+    }
+
+    // Create the alias
+    self.aliases.insert(*from, canonical_to);
+  }
+}
+
+pub trait Cache<K, V> {
+  fn new() -> Self;
+
+  fn get(&self, key: &K) -> Option<&V>;
+
+  fn get_mut(&mut self, key: &K) -> Option<&mut V>;
+
+  fn contains_key(&self, key: &K) -> bool;
+
+  fn insert(&mut self, key: K, value: V);
+
+  fn remove(&mut self, key: &K) -> Option<V>;
+
+  fn into_iter(self) -> impl Iterator<Item = (K, V)>;
+}
+
+#[cfg(feature = "std")]
+const _: () = {
+  use std::collections::HashMap;
+
+  impl<K, V, S> Cache<K, V> for HashMap<K, V, S>
+  where
+    K: core::hash::Hash + Eq,
+    S: core::hash::BuildHasher + Default,
+  {
+    fn new() -> Self {
+      HashMap::with_hasher(Default::default())
+    }
+
+    fn get(&self, key: &K) -> Option<&V> {
+      HashMap::get(self, key)
+    }
+
+    fn get_mut(&mut self, key: &K) -> Option<&mut V> {
+      HashMap::get_mut(self, key)
+    }
+
+    fn contains_key(&self, key: &K) -> bool {
+      HashMap::contains_key(self, key)
+    }
+
+    fn insert(&mut self, key: K, value: V) {
+      HashMap::insert(self, key, value);
+    }
+
+    fn remove(&mut self, key: &K) -> Option<V> {
+      HashMap::remove(self, key)
+    }
+
+    fn into_iter(self) -> impl Iterator<Item = (K, V)> {
+      std::iter::IntoIterator::into_iter(self)
+    }
+  }  
+};
+
 #[cfg(feature = "slab")]
-impl<T> Slab<T> for slab::Slab<T> {
+impl<T> Pool<T> for slab::Slab<T> {
   type Error = core::convert::Infallible;
 
   type Iter<'a>
@@ -588,5 +965,24 @@ impl<T> Slab<T> for slab::Slab<T> {
 
   fn iter(&self) -> Self::Iter<'_> {
     slab::Slab::iter(self)
+  }
+}
+
+trait Ipv6AddrExt {
+  fn is_unicast_link_local(&self) -> bool;
+  fn is_multicast_link_local(&self) -> bool;
+}
+
+impl Ipv6AddrExt for Ipv6Addr {
+  #[inline]
+  fn is_unicast_link_local(&self) -> bool {
+    let octets = self.octets();
+    octets[0] == 0xfe && (octets[1] & 0xc0) == 0x80
+  }
+
+  #[inline]
+  fn is_multicast_link_local(&self) -> bool {
+    let octets = self.octets();
+    octets[0] == 0xff && (octets[1] & 0x0f) == 0x02
   }
 }

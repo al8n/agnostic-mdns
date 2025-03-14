@@ -1,9 +1,10 @@
-use dns_protocol::ResourceType;
-use smol_str::SmolStr;
 use std::{
   net::{Ipv4Addr, Ipv6Addr},
   str::FromStr,
 };
+
+use mdns_proto::ResourceType;
+use smol_str::SmolStr;
 use triomphe::Arc;
 
 use crate::{IPV4_SIZE, IPV6_SIZE};

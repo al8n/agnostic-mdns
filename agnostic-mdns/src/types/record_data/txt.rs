@@ -54,13 +54,6 @@ impl TXT {
   pub fn data(&self) -> &[u8] {
     &self.data
   }
-
-  pub(crate) fn decode_strings(
-    src: &[u8],
-    off: usize,
-  ) -> Result<(SmallVec<SmolStr>, usize), ProtoError> {
-    decode_txt(src, off)
-  }
 }
 
 fn encode_txt(txt: &[SmolStr], buf: &mut [u8], mut off: usize) -> Result<usize, ProtoError> {
@@ -127,59 +120,4 @@ fn encode_txt_string(s: &str, buf: &mut [u8], mut off: usize) -> Result<usize, P
 
   buf[len_byte_offset] = l as u8;
   Ok(off)
-}
-
-fn decode_txt(msg: &[u8], mut off: usize) -> Result<(SmallVec<SmolStr>, usize), ProtoError> {
-  let mut txt = SmallVec::new();
-  while off < msg.len() {
-    let (s, off1) = decode_txt_string(msg, off)?;
-    txt.push(s);
-    off = off1;
-  }
-
-  Ok((txt, off))
-}
-
-fn decode_txt_string(msg: &[u8], mut off: usize) -> Result<(SmolStr, usize), ProtoError> {
-  if off + 1 > msg.len() {
-    return Err(ProtoError::NotEnoughData);
-  }
-
-  let l = msg[off] as usize;
-  off += 1;
-
-  if off + l > msg.len() {
-    return Err(ProtoError::NotEnoughData);
-  }
-
-  let mut buf = XXLargeVec::<u8>::new();
-  let mut consumed = 0;
-  for (i, &b) in msg[off..off + l].iter().enumerate() {
-    match () {
-      () if b == b'"' || b == b'\\' => {
-        buf.extend_from_slice(&msg[off + consumed..off + i]);
-        buf.push(b'\\');
-        buf.push(b);
-        consumed = i + 1;
-      }
-      () if !(b' '..=b'~').contains(&b) => {
-        buf.extend_from_slice(&msg[off + consumed..off + i]);
-        buf.extend_from_slice(escape_bytes(b, &mut [0; 4]));
-        consumed = i + 1;
-      }
-      _ => {}
-    }
-  }
-
-  if consumed == 0 {
-    // no escaping needed
-    return core::str::from_utf8(&msg[off..off + l])
-      .map(|s| (SmolStr::new(s), off + l))
-      .map_err(ProtoError::Utf8);
-  }
-
-  buf.extend_from_slice(&msg[off + consumed..off + l]);
-  core::str::from_utf8(&buf)
-    .map(|s| (SmolStr::new(s), off + l))
-    .map_err(ProtoError::Utf8)
 }

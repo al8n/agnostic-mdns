@@ -11,8 +11,8 @@ use super::{
   types::{A, AAAA, Name, PTR, RecordDataRef, RecordRef, SRV, TXT},
 };
 
-use dns_protocol::{Label, ResourceRecord, ResourceType};
 use either::Either;
+use mdns_proto::{Label, ResourceRecord, ResourceType};
 use smallvec_wrapper::{SmallVec, TinyVec};
 use smol_str::{SmolStr, format_smolstr};
 use triomphe::Arc;

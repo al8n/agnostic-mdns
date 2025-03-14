@@ -11,11 +11,13 @@ description = "Sans-I/O mDNS protocol implementation"
 
 [features]
 default = ["std"]
-std = ["slab?/default", "dns-protocol/default", "thiserror/default"]
+std = ["slab?/default", "dns-protocol/default", "thiserror/default", "simdutf8/default"]
 alloc = []
 
 [dependencies]
-dns-protocol = { version = "0.1", package = "dns-protocol-patch", default-features = false }
+derive_more = { version = "2", features = ["is_variant", "display", "from_str"] }
+dns-protocol = { version = "0.1", package = "dns-protocol-patch", default-features = false, path = "../../async-dns/dns-protocol" }
+simdutf8 = { version = "0.1", default-features = false }
 thiserror = { version = "2", default-features = false }
 
 slab = { version = "0.4", optional = true, default-features = false }

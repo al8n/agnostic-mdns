@@ -13,8 +13,8 @@ use crate::{
 };
 use iprobe::{ipv4, ipv6};
 use mdns_proto::{
-  Endpoint, Slab,
-  proto::{Message, Question, ResourceRecord},
+  Endpoint, Message, Pool, Question, ResourceRecord,
+  error::{BufferType, ProtoError},
 };
 use smallvec_wrapper::SmallVec;
 
@@ -64,12 +64,13 @@ pub struct Server<S, Q, Z> {
   v4_udp: Option<UdpSocket>,
   v6_udp: Option<UdpSocket>,
   closer: Closer,
+  log_empty_responses: bool,
 }
 
 impl<S, Q, Z> Server<S, Q, Z>
 where
-  S: Slab<Q>,
-  Q: Slab<u16>,
+  S: Pool<Q>,
+  Q: Pool<u16>,
   Z: Zone,
 {
   /// Creates a new server with the given zone and options.
@@ -106,6 +107,7 @@ where
         v4_udp: v4,
         v6_udp: v6,
         closer: closer.clone(),
+        log_empty_responses: opts.log_empty_responses,
       },
       closer,
     ))
@@ -119,6 +121,7 @@ where
       v4_udp,
       v6_udp,
       closer,
+      log_empty_responses,
     } = self;
 
     let mut buf = vec![0; MAX_PAYLOAD_SIZE];
@@ -149,7 +152,7 @@ where
 
         if let Some((size, addr)) = v4_data {
           let data = &buf[..size];
-          Self::handle_query(&mut endpoint, udp, addr, data, &zone);
+          Self::handle_query(&mut endpoint, udp, addr, data, &zone, log_empty_responses);
         }
       }
 
@@ -167,7 +170,7 @@ where
 
         if let Some((size, addr)) = v6_data {
           let data = &buf[..size];
-          Self::handle_query(&mut endpoint, udp, addr, data, &zone);
+          Self::handle_query(&mut endpoint, udp, addr, data, &zone, log_empty_responses);
         }
       }
     }
@@ -179,6 +182,7 @@ where
     addr: SocketAddr,
     data: &[u8],
     zone: &Z,
+    log_empty_responses: bool,
   ) {
     let ch = match endpoint.accept() {
       Err(e) => {
@@ -204,34 +208,27 @@ where
         ) {
           Ok(msg) => break msg,
           Err(e) => match e {
-            dns_protocol::Error::NotEnoughWriteSpace {
+            ProtoError::NotEnoughWriteSpace {
               tried_to_write,
               buffer_type,
               ..
             } => match buffer_type {
-              "Question" => {
+              BufferType::Question => {
                 questions.resize(tried_to_write.into(), Question::default());
               }
-              "Answer" => {
+              BufferType::Answer => {
                 answers.resize(tried_to_write.into(), ResourceRecord::default());
               }
-              "Authority" => {
+              BufferType::Authority => {
                 authorities.resize(tried_to_write.into(), ResourceRecord::default());
               }
-              "Additional" => {
+              BufferType::Additional => {
                 additionals.resize(tried_to_write.into(), ResourceRecord::default());
-              }
-              _ => {
-                tracing::error!(from=%addr, err=%e, "mdns server: fail to parse message");
-                if let Err(e) = endpoint.handle_drain_connection(ch) {
-                  tracing::error!(from=%addr, err=%e, "mdns server: fail to drain connection");
-                }
-                return;
               }
             },
             _ => {
               tracing::error!(from=%addr, err=%e, "mdns server: fail to parse message");
-              if let Err(e) = endpoint.handle_drain_connection(ch) {
+              if let Err(e) = endpoint.drain_connection(ch) {
                 tracing::error!(from=%addr, err=%e, "mdns server: fail to drain connection");
               }
               return;
@@ -241,10 +238,10 @@ where
       }
     };
 
-    let q = match endpoint.handle_incoming(ch, req) {
+    let q = match endpoint.recv_query(ch, req) {
       Err(e) => {
         tracing::error!(from=%addr, err=%e, "mdns server: fail to handle event");
-        if let Err(e) = endpoint.handle_drain_connection(ch) {
+        if let Err(e) = endpoint.drain_connection(ch) {
           tracing::error!(from=%addr, err=%e, "mdns server: fail to drain connection");
         }
         return;
@@ -253,7 +250,7 @@ where
     };
 
     for question in q.questions() {
-      match endpoint.handle_response(q.query_handle(), *question) {
+      match endpoint.prepare_response(q.query_handle(), *question) {
         Err(e) => {
           tracing::error!(from=%addr, err=%e, "mdns server: fail to handle question");
         }
@@ -272,6 +269,17 @@ where
             }
             Ok(records) => records.collect::<SmallVec<_>>(),
           };
+
+          if log_empty_responses && (answers.is_empty() && additionals.is_empty()) {
+            tracing::info!(
+              class=%question.class(),
+              type=?question.ty(),
+              name=%question.name(),
+              "mdns server: no responses for question",
+            );
+            continue;
+          }
+
           let msg = Message::new(
             outgoing.id(),
             outgoing.flags(),
@@ -297,11 +305,11 @@ where
       };
     }
 
-    if let Err(e) = endpoint.handle_drain_query(q.query_handle()) {
+    if let Err(e) = endpoint.drain_query(q.query_handle()) {
       tracing::error!(from=%addr, err=%e, "mdns server: fail to drain query");
     }
 
-    if let Err(e) = endpoint.handle_drain_connection(ch) {
+    if let Err(e) = endpoint.drain_connection(ch) {
       tracing::error!(from=%addr, err=%e, "mdns server: fail to drain connection");
     }
   }

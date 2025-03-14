@@ -1,4 +1,4 @@
-use dns_protocol::{Label, Serialize};
+use mdns_proto::{Label, Serialize};
 use smol_str::SmolStr;
 use triomphe::Arc;
 

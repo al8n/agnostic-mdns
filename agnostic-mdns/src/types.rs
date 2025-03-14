@@ -8,9 +8,7 @@ pub use record::RecordRef;
 pub use record_data::{A, AAAA, PTR, RecordDataRef, SRV, TXT};
 pub use smallvec_wrapper::{OneOrMore, TinyVec};
 
-pub(crate) use message::Message;
 pub(crate) use name::Name;
-pub(crate) use query::Query;
 pub(crate) use record_data::RecordData;
 
 /// See RFC 1035 section 2.3.4

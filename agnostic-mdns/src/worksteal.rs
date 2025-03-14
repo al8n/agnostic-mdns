@@ -1,9 +1,11 @@
 use agnostic_net::runtime::RuntimeLite;
-use dns_protocol::{Label, ResourceRecord, ResourceType};
+use mdns_proto::{Label, ResourceRecord, ResourceType};
 
 pub use agnostic_net as net;
+pub use client::*;
 pub use server::*;
 
+mod client;
 mod server;
 
 #[cfg(test)]

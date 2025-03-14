@@ -26,9 +26,6 @@ const MAX_INLINE_PACKET_SIZE: usize = 512;
 
 /// mDNS client
 mod client;
-mod future;
-/// mDNS server
-mod server;
 mod types;
 
 /// synchronous mDNS implementation
@@ -411,7 +408,7 @@ impl core::ops::DerefMut for Buffer {
 
 #[test]
 fn test_label() {
-  use dns_protocol::{Flags, Label, Message, Question, ResourceType};
+  use mdns_proto::{Flags, Label, Message, Question, ResourceType};
 
   let label = Label::from("My server");
   println!("label: {}", label);
