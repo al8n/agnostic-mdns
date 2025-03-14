@@ -506,9 +506,9 @@ where
   pub fn recv_response<'container, 'innards, C, A, M>(
     &mut self,
     from: SocketAddr,
-    cache: &mut InprogressCache<'innards, C, A>,
+    cache: &mut InprogressCache<'container, C, A>,
     msg: Message<'container, 'innards>,
-  ) -> Result<impl Iterator<Item = ResponseEvent<'innards>>, Error<S::Error, Q::Error>>
+  ) -> Result<impl Iterator<Item = ResponseEvent<'container>>, Error<S::Error, Q::Error>>
   where
     C: for<'b> Cache<Label<'b>, ServiceEntry<'b>>,
     A: for<'b> Cache<Label<'b>, Label<'b>>,
@@ -518,6 +518,7 @@ where
 
     let mut modified_entries = M::new();
 
+    // TODO(reddaly): Check that response corresponds to service addr?
     for record in msg.answers().iter().chain(msg.additional().iter()) {
       let record_name = record.name();
       match record.ty() {
@@ -527,8 +528,10 @@ where
 
           match res {
             Ok(ip) => {
-              let entry = cache.get_or_create_entry(&record_name);
-              entry.ipv4 = Some(Ipv4Addr::from(ip));
+              cache.entry(&record_name, |entry| {
+                entry.ipv4 = Some(Ipv4Addr::from(ip));
+              });
+
               modified_entries.insert(record_name, ());
             }
             Err(_) => {
@@ -544,19 +547,20 @@ where
 
           match res {
             Ok(ip) => {
-              let entry = cache.get_or_create_entry(&record_name);
-              let ip = Ipv6Addr::from(ip);
-              entry.ipv6 = Some(ip);
+              cache.entry(&record_name, |entry| {
+                let ip = Ipv6Addr::from(ip);
+                entry.ipv6 = Some(ip);
 
-              // link-local IPv6 addresses must be qualified with a zone (interface). Zone is
-              // specific to this machine/network-namespace and so won't be carried in the
-              // mDNS message itself. We borrow the zone from the source address of the UDP
-              // packet, as the link-local address should be valid on that interface.
-              if Ipv6AddrExt::is_unicast_link_local(&ip) || ip.is_multicast_link_local() {
-                if let SocketAddr::V6(addr) = from {
-                  entry.zone = Some(addr.scope_id());
+                // link-local IPv6 addresses must be qualified with a zone (interface). Zone is
+                // specific to this machine/network-namespace and so won't be carried in the
+                // mDNS message itself. We borrow the zone from the source address of the UDP
+                // packet, as the link-local address should be valid on that interface.
+                if Ipv6AddrExt::is_unicast_link_local(&ip) || ip.is_multicast_link_local() {
+                  if let SocketAddr::V6(addr) = from {
+                    entry.zone = Some(addr.scope_id());
+                  }
                 }
-              }
+              }); 
 
               modified_entries.insert(record_name, ());
             }
@@ -568,7 +572,7 @@ where
           }
         }
         ResourceType::Ptr => {
-          cache.get_or_create_entry(&record_name);
+          cache.entry(&record_name, |_| {});
           modified_entries.insert(record_name, ());
         }
         ResourceType::Srv => {
@@ -582,16 +586,18 @@ where
           }
 
           // Update the entry
-          let entry = cache.get_or_create_entry(&record_name);
-          entry.host = target;
-          entry.port = srv.port();
+          cache.entry(&record_name, |entry| {
+            entry.host = target;
+            entry.port = srv.port();
+          });
           modified_entries.insert(record_name, ());
         }
         ResourceType::Txt => {
           let data = record.data();
-          let entry = cache.get_or_create_entry(&record_name);
-          entry.txts = Txt::from_bytes(data, 0, data.len());
-          entry.has_txt = true;
+          cache.entry(&record_name, |entry| {
+            entry.txts = Txt::from_bytes(data, 0, data.len());
+            entry.has_txt = true;
+          });
           modified_entries.insert(record_name, ());
         }
         _ => continue,
@@ -816,7 +822,10 @@ where
   }
 
   // Get a mutable reference to an entry, creating it if it doesn't exist
-  fn get_or_create_entry(&mut self, name: &Label<'a>) -> &mut ServiceEntry {
+  fn entry<F>(&mut self, name: &Label<'a>, op: F)
+  where
+    F: FnOnce(&mut ServiceEntry<'a>),
+  {
     let canonical_name = self.resolve_name(name);
 
     if !self.entries.contains_key(&canonical_name) {
@@ -824,7 +833,7 @@ where
       self.entries.insert(canonical_name, builder);
     }
 
-    self.entries.get_mut(&canonical_name).unwrap()
+    op(self.entries.get_mut(&canonical_name).unwrap())
   }
 
   // Create an alias from one name to another
@@ -833,26 +842,26 @@ where
 
     // If the 'from' exists as an entry, merge it into 'to'
     if let Some(from_entry) = self.entries.remove(from) {
-      let to_entry = self.get_or_create_entry(&canonical_to);
+      self.entry(&canonical_to, |to_entry| {
+        // Merge the entries, keeping non-None values from the original entry
+        if to_entry.port == 0 {
+          to_entry.port = from_entry.port;
+        }
 
-      // Merge the entries, keeping non-None values from the original entry
-      if to_entry.port == 0 {
-        to_entry.port = from_entry.port;
-      }
+        if to_entry.ipv4.is_none() {
+          to_entry.ipv4 = from_entry.ipv4;
+        }
 
-      if to_entry.ipv4.is_none() {
-        to_entry.ipv4 = from_entry.ipv4;
-      }
+        if to_entry.ipv6.is_none() {
+          to_entry.ipv6 = from_entry.ipv6;
+          to_entry.zone = from_entry.zone;
+        }
 
-      if to_entry.ipv6.is_none() {
-        to_entry.ipv6 = from_entry.ipv6;
-        to_entry.zone = from_entry.zone;
-      }
-
-      if !to_entry.has_txt {
-        to_entry.has_txt = from_entry.has_txt;
-        to_entry.txts = from_entry.txts;
-      }
+        if !to_entry.has_txt {
+          to_entry.has_txt = from_entry.has_txt;
+          to_entry.txts = from_entry.txts;
+        }
+      });      
     }
 
     // Create the alias
@@ -912,7 +921,7 @@ const _: () = {
     fn into_iter(self) -> impl Iterator<Item = (K, V)> {
       std::iter::IntoIterator::into_iter(self)
     }
-  }  
+  }
 };
 
 #[cfg(feature = "slab")]

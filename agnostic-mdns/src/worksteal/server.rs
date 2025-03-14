@@ -291,13 +291,6 @@ where
               BufferType::Additional => {
                 additionals.resize(tried_to_write.into(), ResourceRecord::default());
               }
-              _ => {
-                tracing::error!(from=%addr, err=%e, "mdns server: fail to parse message");
-                if let Err(e) = endpoint.drain_connection(ch) {
-                  tracing::error!(from=%addr, err=%e, "mdns server: fail to drain connection");
-                }
-                return;
-              }
             },
             _ => {
               tracing::error!(from=%addr, err=%e, "mdns server: fail to parse message");

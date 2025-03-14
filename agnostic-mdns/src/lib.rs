@@ -361,6 +361,7 @@ where
 }
 
 #[allow(clippy::large_enum_variant)]
+#[derive(Clone)]
 enum Buffer {
   Heap(Vec<u8>),
   Stack([u8; MAX_INLINE_PACKET_SIZE]),
