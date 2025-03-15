@@ -2,14 +2,12 @@ use core::{error::Error, net::IpAddr};
 
 use std::{
   io,
-  net::{ToSocketAddrs, Ipv4Addr, Ipv6Addr},
-  sync::atomic::{AtomicU32, Ordering},
+  net::{Ipv4Addr, Ipv6Addr, ToSocketAddrs},
   str::FromStr,
+  sync::atomic::{AtomicU32, Ordering},
 };
 
-use super::{
-  invalid_input_err, is_fqdn, IPV4_SIZE, IPV6_SIZE,
-};
+use super::{IPV4_SIZE, IPV6_SIZE, invalid_input_err, is_fqdn};
 
 use mdns_proto::proto::{Label, ResourceRecord, ResourceType};
 use smallvec_wrapper::{SmallVec, TinyVec};
@@ -171,8 +169,6 @@ impl From<AAAA> for Ipv6Addr {
     value.addr()
   }
 }
-
-
 
 /// A builder for creating a new [`Service`].
 pub struct ServiceBuilder<'a> {
@@ -756,9 +752,7 @@ impl Service {
       () if hostname_label.eq(&qn) && matches!(rt, ResourceType::A | ResourceType::AAAA) => {
         self.instance_records(qn, rt)
       }
-      _ => {
-        core::iter::empty()
-      }
+      _ => core::iter::empty(),
     }
   }
 
@@ -769,7 +763,13 @@ impl Service {
     rt: ResourceType,
   ) -> impl Iterator<Item = ResourceRecord<'a>> {
     match rt {
-      ResourceType::Wildcard | ResourceType::Ptr => core::iter::once(ResourceRecord::new(name, ResourceType::Ptr, DNS_CLASS_IN, self.ttl(), self.service_addr.data())),
+      ResourceType::Wildcard | ResourceType::Ptr => core::iter::once(ResourceRecord::new(
+        name,
+        ResourceType::Ptr,
+        DNS_CLASS_IN,
+        self.ttl(),
+        self.service_addr.data(),
+      )),
       _ => core::iter::empty(),
     }
   }
@@ -783,8 +783,14 @@ impl Service {
     match rt {
       ResourceType::Wildcard | ResourceType::Ptr => {
         // Get the instance records
-        core::iter::once(ResourceRecord::new(name, ResourceType::Ptr, DNS_CLASS_IN, self.ttl(), self.instance_addr.data()))
-          .chain(self.instance_records(self.instance_addr.name().into(), ResourceType::Wildcard))
+        core::iter::once(ResourceRecord::new(
+          name,
+          ResourceType::Ptr,
+          DNS_CLASS_IN,
+          self.ttl(),
+          self.instance_addr.data(),
+        ))
+        .chain(self.instance_records(self.instance_addr.name().into(), ResourceType::Wildcard))
       }
       _ => core::iter::empty(),
     }
@@ -811,11 +817,23 @@ impl Service {
         ResourceRecord::new(name, ResourceType::A, DNS_CLASS_IN, self.ttl(), ip.data())
       }),
       ResourceType::AAAA => self.ipv6s.iter().map(move |ip| {
-        ResourceRecord::new(name, ResourceType::AAAA, DNS_CLASS_IN, self.ttl(), ip.data())
+        ResourceRecord::new(
+          name,
+          ResourceType::AAAA,
+          DNS_CLASS_IN,
+          self.ttl(),
+          ip.data(),
+        )
       }),
       ResourceType::Srv => {
         // Create the SRV Record
-        let recs = core::iter::once(ResourceRecord::new(name, ResourceType::Srv, DNS_CLASS_IN, self.ttl(), self.srv.data()));
+        let recs = core::iter::once(ResourceRecord::new(
+          name,
+          ResourceType::Srv,
+          DNS_CLASS_IN,
+          self.ttl(),
+          self.srv.data(),
+        ));
         recs
           // Add the A record
           .chain(self.instance_records(self.instance_addr.name().into(), ResourceType::A))
@@ -826,7 +844,13 @@ impl Service {
       }
       ResourceType::Txt => {
         // Build a TXT response for the instance
-        core::iter::once(ResourceRecord::new(name, ResourceType::Txt, DNS_CLASS_IN, self.ttl(), self.txt.data()))
+        core::iter::once(ResourceRecord::new(
+          name,
+          ResourceType::Txt,
+          DNS_CLASS_IN,
+          self.ttl(),
+          self.txt.data(),
+        ))
       }
       _ => core::iter::empty(),
     }

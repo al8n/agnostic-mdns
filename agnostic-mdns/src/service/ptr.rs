@@ -1,4 +1,7 @@
-use mdns_proto::{error::ProtoError, proto::{Label, Serialize}};
+use mdns_proto::{
+  error::ProtoError,
+  proto::{Label, Serialize},
+};
 use smol_str::SmolStr;
 use triomphe::Arc;
 
@@ -40,15 +43,13 @@ impl PTR {
     let label = Label::from(name.as_str());
     let len = label.serialized_len();
     let mut buf = vec![0; len];
-    label
-      .serialize(&mut buf)
-      .map(|size| {
-        buf.truncate(size);
-        Self {
-          data: Arc::from(buf),
-          name,
-        }
-      })
+    label.serialize(&mut buf).map(|size| {
+      buf.truncate(size);
+      Self {
+        data: Arc::from(buf),
+        name,
+      }
+    })
   }
 
   /// Returns the encoded bytes of the name.

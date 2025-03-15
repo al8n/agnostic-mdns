@@ -37,10 +37,7 @@ async fn server_start_stop<N: Net>() {
   assert_eq!(s.instance().as_str(), "hostname");
   assert_eq!(s.hostname().as_str(), "testhost.");
   assert_eq!(s.domain().as_str(), "local.");
-  assert_eq!(
-    s.ipv4s(),
-    &["192.168.0.42".parse::<Ipv4Addr>().unwrap(),]
-  );
+  assert_eq!(s.ipv4s(), &["192.168.0.42".parse::<Ipv4Addr>().unwrap(),]);
   assert_eq!(
     s.ipv6s(),
     &["2620:0:1000:1900:b0c2:d0b2:c411:18bc"

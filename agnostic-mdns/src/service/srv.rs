@@ -3,7 +3,10 @@ use core::ops::{Range, RangeFrom};
 use smol_str::SmolStr;
 use triomphe::Arc;
 
-use mdns_proto::{error::ProtoError, proto::{Label, Serialize}};
+use mdns_proto::{
+  error::ProtoError,
+  proto::{Label, Serialize},
+};
 
 /// [RFC 2782, DNS SRV RR, February 2000](https://tools.ietf.org/html/rfc2782)
 ///
@@ -108,15 +111,13 @@ impl SRV {
     buf[Self::PRIORITY_RANGE].copy_from_slice(priority.to_be_bytes().as_ref());
     buf[Self::WEIGHT_RANGE].copy_from_slice(weight.to_be_bytes().as_ref());
     buf[Self::PORT_RANGE].copy_from_slice(port.to_be_bytes().as_ref());
-    label
-      .serialize(&mut buf[Self::TARGET_RANGE])
-      .map(|size| {
-        buf.truncate(Self::TARGET_OFFSET + size);
-        Self {
-          data: Arc::from(buf),
-          target,
-        }
-      })
+    label.serialize(&mut buf[Self::TARGET_RANGE]).map(|size| {
+      buf.truncate(Self::TARGET_OFFSET + size);
+      Self {
+        data: Arc::from(buf),
+        target,
+      }
+    })
   }
 
   /// Returns the bytes format of the SRV record data.

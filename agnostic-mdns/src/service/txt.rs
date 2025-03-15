@@ -62,7 +62,6 @@ impl TXT {
 fn encode_txt(txt: &[SmolStr], buf: &mut [u8]) -> Result<usize, ServiceError> {
   let mut off = 0;
   if txt.is_empty() {
-
     buf[off] = 0;
     return Ok(off);
   }

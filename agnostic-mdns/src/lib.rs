@@ -25,7 +25,7 @@ const MDNS_PORT: u16 = 5353;
 const MAX_PAYLOAD_SIZE: usize = 9000;
 const MAX_INLINE_PACKET_SIZE: usize = 512;
 
-pub use mdns_proto::{proto::Label, error};
+pub use mdns_proto::{error, proto::Label};
 
 /// synchronous mDNS implementation
 pub mod sync;
@@ -494,7 +494,7 @@ impl<'a> QueryParam<'a> {
 pub mod tokio {
   use std::io;
 
-  use super::{worksteal::Lookup, QueryParam, service::Service};
+  use super::{QueryParam, service::Service, worksteal::Lookup};
   pub use agnostic_net::{runtime::tokio::TokioRuntime as Runtime, tokio::Net};
   use mdns_proto::proto::Label;
 
@@ -522,7 +522,7 @@ pub mod tokio {
 #[cfg(feature = "smol")]
 #[cfg_attr(docsrs, doc(cfg(feature = "smol")))]
 pub mod smol {
-  use super::{worksteal::Lookup, QueryParam, Label, service::Service};
+  use super::{Label, QueryParam, service::Service, worksteal::Lookup};
   use std::io;
 
   pub use agnostic_net::{runtime::smol::SmolRuntime as Runtime, smol::Net};
@@ -551,7 +551,7 @@ pub mod smol {
 #[cfg(feature = "async-std")]
 #[cfg_attr(docsrs, doc(cfg(feature = "async-std")))]
 pub mod async_std {
-  use super::{worksteal::Lookup, QueryParam, Label, service::Service};
+  use super::{Label, QueryParam, service::Service, worksteal::Lookup};
   use std::io;
 
   pub use agnostic_net::{async_std::Net, runtime::async_std::AsyncStdRuntime as Runtime};
@@ -667,7 +667,6 @@ where
 {
   io::Error::new(io::ErrorKind::InvalidInput, e)
 }
-
 
 #[allow(clippy::large_enum_variant)]
 #[derive(Clone)]
