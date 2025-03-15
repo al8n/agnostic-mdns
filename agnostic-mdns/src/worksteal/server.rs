@@ -10,10 +10,10 @@ use atomic_refcell::AtomicRefCell;
 use futures::{FutureExt, StreamExt as _, stream::FuturesUnordered};
 use iprobe::{ipv4, ipv6};
 use mdns_proto::{
-  Endpoint, Message, Question, ResourceRecord,
   error::{BufferType, ProtoError},
+  proto::{Label, Message, Question, ResourceRecord},
+  server::SlabEndpoint,
 };
-use slab::Slab;
 use smallvec_wrapper::SmallVec;
 use triomphe::Arc;
 
@@ -165,7 +165,7 @@ where
   /// Indicates the server should print an informative message
   /// when there is an mDNS query for which the server has no response.
   log_empty_responses: bool,
-  endpoint: Endpoint<Slab<Slab<u16>>, Slab<u16>>,
+  endpoint: SlabEndpoint,
   shutdown_rx: Receiver<()>,
 }
 
@@ -185,7 +185,7 @@ where
       zone,
       local_addr,
       log_empty_responses,
-      endpoint: Endpoint::server(),
+      endpoint: SlabEndpoint::new(),
       shutdown_rx,
     })
   }
@@ -202,6 +202,7 @@ where
 
     let mut buf = vec![0; MAX_PAYLOAD_SIZE];
 
+    tracing::info!(local=%local_addr, service=?zone, "mdns server: listening mDNS packets");
     loop {
       let shutdown_fut = shutdown_rx.recv().fuse();
       let recv_fut = async {
@@ -243,7 +244,7 @@ where
   }
 
   async fn handle_query(
-    endpoint: &mut Endpoint<Slab<Slab<u16>>, Slab<u16>>,
+    endpoint: &mut SlabEndpoint,
     conn: &N::UdpSocket,
     addr: SocketAddr,
     data: &[u8],
@@ -304,7 +305,7 @@ where
       }
     };
 
-    let q = match endpoint.recv_query(ch, req) {
+    let q = match endpoint.recv(ch, req) {
       Err(e) => {
         tracing::error!(from=%addr, err=%e, "mdns server: fail to handle event");
         if let Err(e) = endpoint.drain_connection(ch) {
@@ -316,11 +317,19 @@ where
     };
 
     for question in q.questions() {
-      match endpoint.prepare_response(q.query_handle(), *question) {
+      match endpoint.response(q.query_handle(), *question) {
         Err(e) => {
           tracing::error!(from=%addr, err=%e, "mdns server: fail to handle question");
         }
         Ok(outgoing) => {
+          tracing::debug!(
+            from=%addr,
+            class=%question.class(),
+            type=?question.ty(),
+            name=%question.name(),
+            eq=(Label::from("_foobar._tcp") == question.name()),
+            "mdns server: handling question",
+          );
           let mut answers = match zone.answers(question.name(), question.ty()).await {
             Err(e) => {
               tracing::error!(from=%addr, err=%e, "mdns server: fail to get answers from zone");
@@ -358,12 +367,17 @@ where
 
           let mut buf = Buffer::zerod(encoded_len);
 
-          if let Err(e) = msg.write(&mut buf) {
-            tracing::error!(from=%addr, err=%e, "mdns server: fail to serialize response message");
-            continue;
-          }
+          let len = match msg.write(&mut buf) {
+            Ok(len) => len,
+            Err(e) => {
+              tracing::error!(from=%addr, err=%e, "mdns server: fail to serialize response message");
+              continue;
+            }
+          };
+          tracing::trace!(from=%addr, answers=?answers, "mdns server: sending response message");
 
-          if let Err(e) = conn.send_to(&buf[..encoded_len], addr).await {
+          tracing::trace!(from=%addr, data=?&buf[..len], "mdns server: sending response message");
+          if let Err(e) = conn.send_to(&buf[..len], addr).await {
             tracing::error!(from=%addr, err=%e, "mdns server: fail to send response message");
             continue;
           }

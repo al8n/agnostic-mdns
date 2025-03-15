@@ -1,4 +1,4 @@
-use super::{ProtoError, not_enough_read_data};
+use super::error::{ProtoError, not_enough_read_data};
 
 use dns_protocol::{Cursor, Deserialize, Label};
 

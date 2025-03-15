@@ -6,7 +6,7 @@ use std::{
 use smol_str::SmolStr;
 use triomphe::Arc;
 
-use mdns_proto::{Label, ResourceRecord, ResourceType, Serialize};
+use mdns_proto::proto::{Label, ResourceRecord, ResourceType, Serialize};
 
 use crate::ProtoError;
 
@@ -71,11 +71,22 @@ use crate::ProtoError;
 ///
 /// ```
 // #[cfg_attr(feature = "serde-config", derive(Deserialize, Serialize))]
-#[derive(Debug, PartialEq, Eq, Hash, Clone)]
+#[derive(PartialEq, Eq, Hash, Clone)]
 #[allow(clippy::upper_case_acronyms)]
 pub struct SRV {
   data: Arc<[u8]>,
   target: SmolStr,
+}
+
+impl core::fmt::Debug for SRV {
+  fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+    f.debug_struct("SRV")
+      .field("priority", &self.priority())
+      .field("weight", &self.weight())
+      .field("port", &self.port())
+      .field("target", &self.target)
+      .finish()
+  }
 }
 
 impl SRV {

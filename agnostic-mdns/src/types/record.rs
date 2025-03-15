@@ -1,34 +1,5 @@
-use std::net::{Ipv4Addr, Ipv6Addr};
-
-use either::Either;
-use mdns_proto::{Label, ResourceRecord, ResourceType};
-use smol_str::SmolStr;
-use triomphe::Arc;
-
-use super::{DNS_CLASS_IN, Name, ProtoError, RecordDataRef, TXT, record_data::RecordData};
-
-const IPV4_LEN: usize = 4;
-const IPV6_LEN: usize = 16;
-const U16_SIZE: usize = 2;
-const U32_SIZE: usize = 4;
-const RECORD_HEADER_ENCODED_WITHOUT_NAME_SIZE: usize = 10; // ty(2) + class(2) + ttl(4) + rdlen(2)
-
-/// The header all mDNS resource records share.
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub(crate) struct RecordHeader {
-  name: SmolStr,
-  ty: ResourceType,
-  class: u16,
-  ttl: u32,
-}
-
-impl RecordHeader {
-  /// Returns the name of the record.
-  #[inline]
-  pub const fn name(&self) -> &SmolStr {
-    &self.name
-  }
-}
+use mdns_proto::proto::{Label, ResourceRecord};
+use super::{DNS_CLASS_IN, RecordDataRef};
 
 /// The mDNS resource record.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -77,120 +48,120 @@ impl<'a> RecordRef<'a> {
   }
 }
 
-/// The mDNS resource record.
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub(crate) struct Record {
-  header: RecordHeader,
-  data: RecordData,
-}
+// /// The mDNS resource record.
+// #[derive(Debug, Clone, PartialEq, Eq, Hash)]
+// pub(crate) struct Record {
+//   header: RecordHeader,
+//   data: RecordData,
+// }
 
-impl Record {
-  /// Creates a new mDNS resource record.
-  pub fn from_rdata(name: SmolStr, ttl: u32, data: RecordData) -> Self {
-    Self {
-      header: RecordHeader {
-        name,
-        ty: data.ty(),
-        class: DNS_CLASS_IN,
-        ttl,
-      },
-      data,
-    }
-  }
+// impl Record {
+//   /// Creates a new mDNS resource record.
+//   pub fn from_rdata(name: SmolStr, ttl: u32, data: RecordData) -> Self {
+//     Self {
+//       header: RecordHeader {
+//         name,
+//         ty: data.ty(),
+//         class: DNS_CLASS_IN,
+//         ttl,
+//       },
+//       data,
+//     }
+//   }
 
-  /// Consumes the record and returns the [`RecordHeader`] and [`RecordData`].
-  #[inline]
-  pub fn into_components(self) -> (RecordHeader, RecordData) {
-    (self.header, self.data)
-  }
+//   /// Consumes the record and returns the [`RecordHeader`] and [`RecordData`].
+//   #[inline]
+//   pub fn into_components(self) -> (RecordHeader, RecordData) {
+//     (self.header, self.data)
+//   }
 
-  // pub(super) fn decode(
-  //   src: &[u8],
-  //   off: usize,
-  //   consume: bool,
-  // ) -> Result<(Option<Self>, usize), ProtoError> {
-  //   let (name, mut off) = Name::decode(src, off)?;
-  //   let len = src.len();
-  //   if len < off + RECORD_HEADER_ENCODED_WITHOUT_NAME_SIZE {
-  //     return Err(ProtoError::BufferTooSmall);
-  //   }
+//   // pub(super) fn decode(
+//   //   src: &[u8],
+//   //   off: usize,
+//   //   consume: bool,
+//   // ) -> Result<(Option<Self>, usize), ProtoError> {
+//   //   let (name, mut off) = Name::decode(src, off)?;
+//   //   let len = src.len();
+//   //   if len < off + RECORD_HEADER_ENCODED_WITHOUT_NAME_SIZE {
+//   //     return Err(ProtoError::BufferTooSmall);
+//   //   }
 
-  //   let ty = ResourceType::try_from(u16::from_be_bytes([src[off], src[off + 1]]))
-  //     .map_err(|_| ProtoError::InvalidRdata)?;
-  //   off += U16_SIZE;
-  //   let class = u16::from_be_bytes([src[off], src[off + 1]]);
-  //   off += U16_SIZE;
-  //   let ttl = u32::from_be_bytes(src[off..off + U32_SIZE].try_into().unwrap());
-  //   off += U32_SIZE;
-  //   let rdlen = u16::from_be_bytes([src[off], src[off + 1]]) as usize;
-  //   off += U16_SIZE;
-  //   if rdlen > len {
-  //     return Err(ProtoError::Overflow);
-  //   }
+//   //   let ty = ResourceType::try_from(u16::from_be_bytes([src[off], src[off + 1]]))
+//   //     .map_err(|_| ProtoError::InvalidRdata)?;
+//   //   off += U16_SIZE;
+//   //   let class = u16::from_be_bytes([src[off], src[off + 1]]);
+//   //   off += U16_SIZE;
+//   //   let ttl = u32::from_be_bytes(src[off..off + U32_SIZE].try_into().unwrap());
+//   //   off += U32_SIZE;
+//   //   let rdlen = u16::from_be_bytes([src[off], src[off + 1]]) as usize;
+//   //   off += U16_SIZE;
+//   //   if rdlen > len {
+//   //     return Err(ProtoError::Overflow);
+//   //   }
 
-  //   if consume {
-  //     return Ok((None, off + rdlen));
-  //   }
-  //   let src = &src[..off + rdlen];
-  //   let len = src.len();
-  //   let data = match ty {
-  //     ResourceType::A => {
-  //       if off + IPV4_LEN > len {
-  //         return Err(ProtoError::NotEnoughData);
-  //       }
+//   //   if consume {
+//   //     return Ok((None, off + rdlen));
+//   //   }
+//   //   let src = &src[..off + rdlen];
+//   //   let len = src.len();
+//   //   let data = match ty {
+//   //     ResourceType::A => {
+//   //       if off + IPV4_LEN > len {
+//   //         return Err(ProtoError::NotEnoughData);
+//   //       }
 
-  //       let octets: [u8; IPV4_LEN] = src[off..off + IPV4_LEN].try_into().unwrap();
-  //       off += IPV4_LEN;
-  //       RecordData::A(Ipv4Addr::from(octets))
-  //     }
-  //     ResourceType::AAAA => {
-  //       if off + IPV6_LEN > len {
-  //         return Err(ProtoError::NotEnoughData);
-  //       }
+//   //       let octets: [u8; IPV4_LEN] = src[off..off + IPV4_LEN].try_into().unwrap();
+//   //       off += IPV4_LEN;
+//   //       RecordData::A(Ipv4Addr::from(octets))
+//   //     }
+//   //     ResourceType::AAAA => {
+//   //       if off + IPV6_LEN > len {
+//   //         return Err(ProtoError::NotEnoughData);
+//   //       }
 
-  //       let octets: [u8; IPV6_LEN] = src[off..off + IPV6_LEN].try_into().unwrap();
-  //       off += IPV6_LEN;
-  //       RecordData::AAAA(Ipv6Addr::from(octets))
-  //     }
-  //     ResourceType::Ptr => {
-  //       let (name, off1) = Name::decode(src, off)?;
-  //       off = off1;
-  //       RecordData::PTR(name)
-  //     }
-  //     ResourceType::Srv => {
-  //       if off + 6 > len {
-  //         return Err(ProtoError::NotEnoughData);
-  //       }
+//   //       let octets: [u8; IPV6_LEN] = src[off..off + IPV6_LEN].try_into().unwrap();
+//   //       off += IPV6_LEN;
+//   //       RecordData::AAAA(Ipv6Addr::from(octets))
+//   //     }
+//   //     ResourceType::Ptr => {
+//   //       let (name, off1) = Name::decode(src, off)?;
+//   //       off = off1;
+//   //       RecordData::PTR(name)
+//   //     }
+//   //     ResourceType::Srv => {
+//   //       if off + 6 > len {
+//   //         return Err(ProtoError::NotEnoughData);
+//   //       }
 
-  //       let priority = u16::from_be_bytes([src[off], src[off + 1]]);
-  //       off += U16_SIZE;
-  //       let weight = u16::from_be_bytes([src[off], src[off + 1]]);
-  //       off += U16_SIZE;
-  //       let port = u16::from_be_bytes([src[off], src[off + 1]]);
-  //       off += U16_SIZE;
+//   //       let priority = u16::from_be_bytes([src[off], src[off + 1]]);
+//   //       off += U16_SIZE;
+//   //       let weight = u16::from_be_bytes([src[off], src[off + 1]]);
+//   //       off += U16_SIZE;
+//   //       let port = u16::from_be_bytes([src[off], src[off + 1]]);
+//   //       off += U16_SIZE;
 
-  //       let (target, off1) = Name::decode(src, off)?;
-  //       off = off1;
-  //       RecordData::SRV {
-  //         priority,
-  //         weight,
-  //         port,
-  //         target,
-  //       }
-  //     }
-  //     ResourceType::Txt => {
-  //       let (txt, off1) = TXT::decode_strings(src, off)?;
-  //       off = off1;
-  //       RecordData::TXT(match txt.into_inner() {
-  //         Either::Left(s) => Arc::from_iter(s),
-  //         Either::Right(txts) => Arc::from(txts),
-  //       })
-  //     }
-  //     _ => return Ok((None, off + rdlen)),
-  //   };
+//   //       let (target, off1) = Name::decode(src, off)?;
+//   //       off = off1;
+//   //       RecordData::SRV {
+//   //         priority,
+//   //         weight,
+//   //         port,
+//   //         target,
+//   //       }
+//   //     }
+//   //     ResourceType::Txt => {
+//   //       let (txt, off1) = TXT::decode_strings(src, off)?;
+//   //       off = off1;
+//   //       RecordData::TXT(match txt.into_inner() {
+//   //         Either::Left(s) => Arc::from_iter(s),
+//   //         Either::Right(txts) => Arc::from(txts),
+//   //       })
+//   //     }
+//   //     _ => return Ok((None, off + rdlen)),
+//   //   };
 
-  //   let mut r = Self::from_rdata(name, ttl, data);
-  //   r.header.class = class;
-  //   Ok((Some(r), off))
-  // }
-}
+//   //   let mut r = Self::from_rdata(name, ttl, data);
+//   //   r.header.class = class;
+//   //   Ok((Some(r), off))
+//   // }
+// }

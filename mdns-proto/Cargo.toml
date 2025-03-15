@@ -15,8 +15,10 @@ std = ["slab?/default", "dns-protocol/default", "thiserror/default", "simdutf8/d
 alloc = []
 
 [dependencies]
+auto_enums = { version = "0.8", default-features = false }
 derive_more = { version = "2", features = ["is_variant", "display", "from_str"] }
 dns-protocol = { version = "0.1", package = "dns-protocol-patch", default-features = false, path = "../../async-dns/dns-protocol" }
+either = { version = "1", default-features = false }
 simdutf8 = { version = "0.1", default-features = false }
 thiserror = { version = "2", default-features = false }
 

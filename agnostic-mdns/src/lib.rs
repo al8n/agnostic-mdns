@@ -171,95 +171,95 @@ impl ServerOptions {
   }
 }
 
-/// Types for `tokio` runtime
-#[cfg(feature = "tokio")]
-#[cfg_attr(docsrs, doc(cfg(feature = "tokio")))]
-pub mod tokio {
-  use std::io;
+// /// Types for `tokio` runtime
+// #[cfg(feature = "tokio")]
+// #[cfg_attr(docsrs, doc(cfg(feature = "tokio")))]
+// pub mod tokio {
+//   use std::io;
 
-  use super::{Lookup, QueryParam, service::Service};
-  pub use agnostic_net::{runtime::tokio::TokioRuntime as Runtime, tokio::Net};
-  use smol_str::SmolStr;
+//   use super::{Lookup, QueryParam, service::Service};
+//   pub use agnostic_net::{runtime::tokio::TokioRuntime as Runtime, tokio::Net};
+//   use smol_str::SmolStr;
 
-  /// A server that can be used with `tokio` runtime
-  pub type Server = super::worksteal::Server<Net, Service>;
+//   /// A server that can be used with `tokio` runtime
+//   pub type Server = super::worksteal::Server<Net, Service>;
 
-  /// Looks up a given service, in a domain, waiting at most
-  /// for a timeout before finishing the query. The results are streamed
-  /// to a channel. Sends will not block, so clients should make sure to
-  /// either read or buffer. This method will attempt to stop the query
-  /// on cancellation.
-  #[inline]
-  pub async fn query_with(params: QueryParam) -> io::Result<Lookup> {
-    super::client::query_with::<Net>(params).await
-  }
+//   /// Looks up a given service, in a domain, waiting at most
+//   /// for a timeout before finishing the query. The results are streamed
+//   /// to a channel. Sends will not block, so clients should make sure to
+//   /// either read or buffer. This method will attempt to stop the query
+//   /// on cancellation.
+//   #[inline]
+//   pub async fn query_with(params: QueryParam) -> io::Result<Lookup> {
+//     super::client::query_with::<Net>(params).await
+//   }
 
-  /// Similar to [`query_with`], however it uses all the default parameters
-  #[inline]
-  pub async fn lookup(service: SmolStr) -> io::Result<Lookup> {
-    query_with(QueryParam::new(service)).await
-  }
-}
+//   /// Similar to [`query_with`], however it uses all the default parameters
+//   #[inline]
+//   pub async fn lookup(service: SmolStr) -> io::Result<Lookup> {
+//     query_with(QueryParam::new(service)).await
+//   }
+// }
 
-/// Types for `smol` runtime
-#[cfg(feature = "smol")]
-#[cfg_attr(docsrs, doc(cfg(feature = "smol")))]
-pub mod smol {
-  use super::{Lookup, QueryParam, service::Service};
-  use std::io;
+// /// Types for `smol` runtime
+// #[cfg(feature = "smol")]
+// #[cfg_attr(docsrs, doc(cfg(feature = "smol")))]
+// pub mod smol {
+//   use super::{Lookup, QueryParam, service::Service};
+//   use std::io;
 
-  pub use agnostic_net::{runtime::smol::SmolRuntime as Runtime, smol::Net};
-  use smol_str::SmolStr;
+//   pub use agnostic_net::{runtime::smol::SmolRuntime as Runtime, smol::Net};
+//   use smol_str::SmolStr;
 
-  /// A server that can be used with `smol` runtime
-  pub type Server = super::worksteal::Server<Net, Service>;
+//   /// A server that can be used with `smol` runtime
+//   pub type Server = super::worksteal::Server<Net, Service>;
 
-  /// Looks up a given service, in a domain, waiting at most
-  /// for a timeout before finishing the query. The results are streamed
-  /// to a channel. Sends will not block, so clients should make sure to
-  /// either read or buffer. This method will attempt to stop the query
-  /// on cancellation.
-  #[inline]
-  pub async fn query_with(params: QueryParam) -> io::Result<Lookup> {
-    super::client::query_with::<Net>(params).await
-  }
+//   /// Looks up a given service, in a domain, waiting at most
+//   /// for a timeout before finishing the query. The results are streamed
+//   /// to a channel. Sends will not block, so clients should make sure to
+//   /// either read or buffer. This method will attempt to stop the query
+//   /// on cancellation.
+//   #[inline]
+//   pub async fn query_with(params: QueryParam) -> io::Result<Lookup> {
+//     super::client::query_with::<Net>(params).await
+//   }
 
-  /// Similar to [`query_with`], however it uses all the default parameters
-  #[inline]
-  pub async fn lookup(service: SmolStr) -> io::Result<Lookup> {
-    query_with(QueryParam::new(service)).await
-  }
-}
+//   /// Similar to [`query_with`], however it uses all the default parameters
+//   #[inline]
+//   pub async fn lookup(service: SmolStr) -> io::Result<Lookup> {
+//     query_with(QueryParam::new(service)).await
+//   }
+// }
 
-/// Types for `async-std` runtime
-#[cfg(feature = "async-std")]
-#[cfg_attr(docsrs, doc(cfg(feature = "async-std")))]
-pub mod async_std {
-  use super::{Lookup, QueryParam, service::Service};
-  use std::io;
+// /// Types for `async-std` runtime
+// #[cfg(feature = "async-std")]
+// #[cfg_attr(docsrs, doc(cfg(feature = "async-std")))]
+// pub mod async_std {
+//   use super::{Lookup, QueryParam, service::Service};
+//   use std::io;
 
-  pub use agnostic_net::{async_std::Net, runtime::async_std::AsyncStdRuntime as Runtime};
-  use smol_str::SmolStr;
+//   pub use agnostic_net::{async_std::Net, runtime::async_std::AsyncStdRuntime as Runtime};
+//   use smol_str::SmolStr;
 
-  /// A server that can be used with `async-std` runtime
-  pub type Server = super::worksteal::Server<Net, Service>;
+//   /// A server that can be used with `async-std` runtime
+//   pub type Server = super::worksteal::Server<Net, Service>;
 
-  /// Looks up a given service, in a domain, waiting at most
-  /// for a timeout before finishing the query. The results are streamed
-  /// to a channel. Sends will not block, so clients should make sure to
-  /// either read or buffer. This method will attempt to stop the query
-  /// on cancellation.
-  #[inline]
-  pub async fn query_with(params: QueryParam) -> io::Result<Lookup> {
-    super::client::query_with::<Net>(params).await
-  }
+//   /// Looks up a given service, in a domain, waiting at most
+//   /// for a timeout before finishing the query. The results are streamed
+//   /// to a channel. Sends will not block, so clients should make sure to
+//   /// either read or buffer. This method will attempt to stop the query
+//   /// on cancellation.
+//   #[inline]
+//   pub async fn query_with(params: QueryParam) -> io::Result<Lookup> {
+//     super::client::query_with::<Net>(params).await
+//   }
 
-  /// Similar to [`query_with`], however it uses all the default parameters
-  #[inline]
-  pub async fn lookup(service: SmolStr) -> io::Result<Lookup> {
-    query_with(QueryParam::new(service)).await
-  }
-}
+//   /// Similar to [`query_with`], however it uses all the default parameters
+//   #[inline]
+//   pub async fn lookup(service: SmolStr) -> io::Result<Lookup> {
+//     query_with(QueryParam::new(service)).await
+//   }
+// }
 
 mod utils;
 
@@ -405,18 +405,4 @@ impl core::ops::DerefMut for Buffer {
       Buffer::Stack(v) => v,
     }
   }
-}
-
-#[test]
-fn test_label() {
-  use mdns_proto::{Flags, Label, Message, Question, ResourceType};
-
-  let label = Label::from("My server");
-  println!("label: {}", label);
-
-  let mut q = [Question::new(label, ResourceType::Ptr, 0)];
-  let msg = Message::new(0, Flags::new(), &mut q, &mut [], &mut [], &mut []);
-  let mut buf = [0; 1024];
-  let len = msg.write(&mut buf).unwrap();
-  println!("msg: {:?}", &buf[..len]);
 }

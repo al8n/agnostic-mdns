@@ -12,7 +12,7 @@ use super::{
 };
 
 use either::Either;
-use mdns_proto::{Label, ResourceRecord, ResourceType};
+use mdns_proto::proto::{Label, ResourceRecord, ResourceType};
 use smallvec_wrapper::{SmallVec, TinyVec};
 use smol_str::{SmolStr, format_smolstr};
 use triomphe::Arc;
@@ -532,6 +532,7 @@ impl ServiceBuilder {
 }
 
 /// Export a named service by implementing a [`Zone`].
+#[derive(Debug)]
 pub struct Service {
   /// Instance name (e.g. "hostService name")
   instance: SmolStr,
@@ -642,7 +643,10 @@ impl Service {
       () if hostname_label.eq(&qn) && matches!(rt, ResourceType::A | ResourceType::AAAA) => {
         self.instance_records(qn, rt)
       }
-      _ => core::iter::empty(),
+      _ => {
+        tracing::debug!("No answers for {:?}", qn);
+        core::iter::empty()
+      },
     }
   }
 

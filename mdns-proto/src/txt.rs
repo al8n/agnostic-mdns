@@ -1,6 +1,8 @@
 use core::fmt::{self, Write};
 
-use super::{ProtoError, not_enough_read_data};
+use either::Either;
+
+use super::error::{ProtoError, not_enough_read_data};
 
 /// ```text
 /// 3.3.14. TXT RDATA format
@@ -19,6 +21,12 @@ use super::{ProtoError, not_enough_read_data};
 #[derive(Debug, Default, Clone, Copy)]
 pub struct Txt<'container, 'innards> {
   repr: Repr<'container, 'innards>,
+}
+
+impl<'container, 'innards> From<&'container [&'innards str]> for Txt<'container, 'innards> {
+  fn from(strings: &'container [&'innards str]) -> Self {
+    Self::from_strings(strings)
+  }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -51,9 +59,15 @@ impl<'container, 'innards> Txt<'container, 'innards> {
     }
   }
 
+  /// Creates a new Txt record from a slice
+  #[inline]
+  pub const fn from_bytes(src: &'innards [u8]) -> Self {
+    Self::from_bytes_in(src, 0, src.len())
+  }
+
   /// Creates a new Txt record from a byte slice with start and end positions
   #[inline]
-  pub(super) const fn from_bytes(original: &'innards [u8], start: usize, end: usize) -> Self {
+  pub(super) const fn from_bytes_in(original: &'innards [u8], start: usize, end: usize) -> Self {
     Self {
       repr: Repr::BytesStrings {
         original,
@@ -83,6 +97,19 @@ impl<'container, 'innards> Txt<'container, 'innards> {
     };
 
     Strings { repr }
+  }
+
+  /// Returns the internal representation of this TXT record
+  #[inline]
+  pub fn repr(&self) -> Either<&'container [&'innards str], &'innards [u8]> {
+    match &self.repr {
+      Repr::BytesStrings {
+        original,
+        start,
+        end,
+      } => Either::Right(&original[*start..*end]),
+      Repr::Strings(strings) => Either::Left(strings),
+    }
   }
 }
 
@@ -277,32 +304,32 @@ fn decode_txt_segment(
   Ok((segment, content_end))
 }
 
-/// Decode a TXT record from a byte slice, returning the record and the new offset
-pub fn decode_txt<'a>(msg: &[u8], offset: usize) -> Result<(Txt<'a, '_>, usize), ProtoError> {
-  if offset >= msg.len() {
-    return Err(not_enough_read_data(1, 0));
-  }
+// /// Decode a TXT record from a byte slice, returning the record and the new offset
+// fn decode_txt<'a>(msg: &[u8], offset: usize) -> Result<(Txt<'a, '_>, usize), ProtoError> {
+//   if offset >= msg.len() {
+//     return Err(not_enough_read_data(1, 0));
+//   }
 
-  // Find the end by parsing through all the strings
-  let mut position = offset;
-  while position < msg.len() {
-    if position + 1 > msg.len() {
-      break;
-    }
+//   // Find the end by parsing through all the strings
+//   let mut position = offset;
+//   while position < msg.len() {
+//     if position + 1 > msg.len() {
+//       break;
+//     }
 
-    let length = msg[position] as usize;
-    let next_position = position + 1 + length;
+//     let length = msg[position] as usize;
+//     let next_position = position + 1 + length;
 
-    if next_position > msg.len() {
-      break;
-    }
+//     if next_position > msg.len() {
+//       break;
+//     }
 
-    position = next_position;
-  }
+//     position = next_position;
+//   }
 
-  let txt = Txt::from_bytes(msg, offset, position);
-  Ok((txt, position))
-}
+//   let txt = Txt::from_bytes_in(msg, offset, position);
+//   Ok((txt, position))
+// }
 
 // Escape byte without allocation using a fixed buffer
 #[inline]

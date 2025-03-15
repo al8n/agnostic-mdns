@@ -3,29 +3,30 @@ use core::{
   time::Duration,
 };
 use std::{
-  collections::{HashMap, hash_map::Entry},
-  convert::Infallible,
+  collections::{HashMap, HashSet, hash_map::Entry},
   io,
-  ops::ControlFlow,
+  net::IpAddr,
   pin::Pin,
   task::{Context, Poll},
 };
 
 use agnostic_net::{Net, UdpSocket, runtime::RuntimeLite};
 use async_channel::{Receiver, Sender};
-use atomic_refcell::AtomicRefCell;
+use either::Either;
 use futures::{FutureExt, Stream};
 use iprobe::{ipv4, ipv6};
 use mdns_proto::{
-  ConnectionHandle, Flags, InprogressCache, Label, Message, Question, ResourceRecord, SlabEndpoint,
+  client::{Endpoint, Response},
   error::BufferType,
+  proto::{Flags, Label, Message, Question, ResourceRecord},
 };
+use parking_lot::Mutex;
 use smallvec_wrapper::SmallVec;
-use smol_str::SmolStr;
+use smol_str::{SmolStr, ToSmolStr, format_smolstr};
 use triomphe::Arc;
 
 use crate::{
-  Buffer, IPV4_MDNS, IPV6_MDNS, MAX_INLINE_PACKET_SIZE, MAX_PAYLOAD_SIZE, MDNS_PORT,
+  Buffer, IPV4_MDNS, IPV6_MDNS, MDNS_PORT,
   utils::{multicast_udp4_socket, multicast_udp6_socket, unicast_udp4_socket, unicast_udp6_socket},
 };
 
@@ -36,7 +37,7 @@ pub struct ServiceEntry {
   host: SmolStr,
   socket_v4: Option<SocketAddrV4>,
   socket_v6: Option<SocketAddrV6>,
-  infos: Arc<[SmolStr]>,
+  txt: Arc<[SmolStr]>,
 }
 
 impl ServiceEntry {
@@ -80,8 +81,8 @@ impl ServiceEntry {
 
   /// Returns the additional information of the service.
   #[inline]
-  pub fn infos(&self) -> &[SmolStr] {
-    &self.infos
+  pub fn txt(&self) -> &[SmolStr] {
+    &self.txt
   }
 }
 
@@ -94,8 +95,7 @@ struct ServiceEntryBuilder {
   ipv4: Option<Ipv4Addr>,
   ipv6: Option<Ipv6Addr>,
   zone: Option<u32>,
-  infos: Arc<[SmolStr]>,
-  has_txt: bool,
+  txts: Option<Arc<[SmolStr]>>,
   sent: bool,
 }
 
@@ -109,16 +109,15 @@ impl Default for ServiceEntryBuilder {
       ipv4: None,
       ipv6: None,
       zone: None,
-      has_txt: false,
+      txts: None,
       sent: false,
-      infos: Arc::from_iter([]),
     }
   }
 }
 
 impl ServiceEntryBuilder {
   fn complete(&self) -> bool {
-    (self.ipv4.is_some() || self.ipv6.is_some()) && self.port != 0 && self.has_txt
+    (self.ipv4.is_some() || self.ipv6.is_some()) && self.port != 0 && self.txts.is_some()
   }
 
   #[inline]
@@ -136,7 +135,7 @@ impl ServiceEntryBuilder {
       socket_v6: self
         .ipv6
         .map(|ip| SocketAddrV6::new(ip, self.port, 0, self.zone.unwrap_or(0))),
-      infos: self.infos.clone(),
+      txt: self.txts.as_ref().unwrap().clone(),
     }
   }
 }
@@ -536,7 +535,7 @@ where
   };
 
   // create a new client
-  let mut client = Clients::<N>::new(
+  let client = Clients::<N>::new(
     !params.disable_ipv4 && ipv4(),
     !params.disable_ipv6 && ipv6(),
     params.ipv4_interface,
@@ -544,30 +543,33 @@ where
   )
   .await?;
 
-  // <N::Runtime as RuntimeLite>::spawn_detach(async move {
-  //   match client
-  //     .query_in(
-  //       Name::append_fqdn(params.service.as_str(), params.domain.as_str()),
-  //       params.want_unicast_response,
-  //       params.timeout,
-  //       entry_tx.clone(),
-  //       shutdown_rx,
-  //     )
-  //     .await
-  //   {
-  //     Ok(_) => {
-  //       if shutdown_tx.close() {
-  //         tracing::info!("mdns client: closing");
-  //       }
-  //     }
-  //     Err(e) => {
-  //       if shutdown_tx.close() {
-  //         tracing::error!(err=%e, "mdns client: closing");
-  //       }
-  //       let _ = entry_tx.send(Err(e)).await;
-  //     }
-  //   }
-  // });
+  let name = format_smolstr!("{}.{}", params.service, params.domain);
+  tracing::info!("mdns client: starting query for {}", name);
+  <N::Runtime as RuntimeLite>::spawn_detach(async move {
+    match client
+      .query_in(
+        name,
+        params.want_unicast_response,
+        params.timeout,
+        entry_tx.clone(),
+        shutdown_rx,
+        1500,
+      )
+      .await
+    {
+      Ok(_) => {
+        if shutdown_tx.close() {
+          tracing::info!("mdns client: closing");
+        }
+      }
+      Err(e) => {
+        if shutdown_tx.close() {
+          tracing::error!(err=%e, "mdns client: closing");
+        }
+        let _ = entry_tx.send(Err(e)).await;
+      }
+    }
+  });
 
   Ok(lookup)
 }
@@ -585,12 +587,11 @@ where
 struct Clients<N: Net> {
   v4: Option<Client<N>>,
   v6: Option<Client<N>>,
-  endpoint: SlabEndpoint,
 }
 
 impl<N: Net> Clients<N> {
   async fn query_in(
-    mut self,
+    self,
     service: SmolStr,
     want_unicast_response: bool,
     timeout: Duration,
@@ -599,12 +600,9 @@ impl<N: Net> Clients<N> {
     max_payload_size: usize,
   ) -> io::Result<()> {
     // Start listening for response packets
-    let (msg_tx, msg_rx) = async_channel::bounded::<(SocketAddr, Vec<u8>)>(32);
+    let (msg_tx, msg_rx) = async_channel::bounded::<Either<ServiceEntry, SmolStr>>(32);
 
-    let q = self
-      .endpoint
-      .prepare_query(Label::from(service.as_str()), want_unicast_response)
-      .unwrap();
+    let q = Endpoint::prepare_question(Label::from(service.as_str()), want_unicast_response);
 
     let mut qs = [q];
     let msg = Message::new(0, Flags::new(), &mut qs, &mut [], &mut [], &mut []);
@@ -612,29 +610,35 @@ impl<N: Net> Clients<N> {
     let mut buf = Buffer::zerod(space_needed);
     let len = msg.write(&mut buf).unwrap();
 
+    // Map the in-progress responses
+    let inprogress = Arc::new(Mutex::new(InprogressCache::new()));
+
     if let Some(ref client) = self.v4 {
       let tx = msg_tx.clone();
       let shutdown_rx = shutdown_rx.clone();
       let buf = buf.clone();
-      client.query(tx, shutdown_rx, max_payload_size, buf, len);
+      client.query(
+        inprogress.clone(),
+        tx,
+        shutdown_rx,
+        max_payload_size,
+        buf,
+        len,
+      );
     }
 
     if let Some(ref client) = self.v6 {
       let tx = msg_tx.clone();
       let shutdown_rx = shutdown_rx.clone();
-      client.query(tx, shutdown_rx, max_payload_size, buf, len);
+      client.query(
+        inprogress.clone(),
+        tx,
+        shutdown_rx,
+        max_payload_size,
+        buf,
+        len,
+      );
     }
-
-    // Map the in-progress responses
-    let mut inprogress = InprogressCache::<
-      '_,
-      HashMap<Label<'_>, mdns_proto::ServiceEntry<'_>>,
-      HashMap<Label<'_>, Label<'_>>,
-    >::default();
-    let mut questions = SmallVec::new();
-    let mut answers = SmallVec::from([ResourceRecord::default(); 4]);
-    let mut authorities = SmallVec::new();
-    let mut additionals = SmallVec::from([ResourceRecord::default(); 4]);
 
     // Listen until we reach the timeout
     let finish = <N::Runtime as RuntimeLite>::sleep(timeout);
@@ -642,41 +646,40 @@ impl<N: Net> Clients<N> {
 
     loop {
       futures::select! {
+        _ = (&mut finish).fuse() => {
+          break Ok(());
+        },
         res = msg_rx.recv().fuse() => {
           match res {
-            Ok((src_addr, data)) => {
-              let msg = loop {
-                match Message::read(data.as_slice(), &mut questions, &mut answers, &mut authorities, &mut additionals) {
-                  Ok(msg) => break msg,
-                  Err(e) => {
-                    match e {
-                      mdns_proto::error::ProtoError::NotEnoughWriteSpace { tried_to_write, buffer_type, .. } => {
-                        match buffer_type {
-                          BufferType::Question => questions.resize(tried_to_write.into(), Question::default()),
-                          BufferType::Answer => answers.resize(tried_to_write.into(), ResourceRecord::default()),
-                          BufferType::Authority => authorities.resize(tried_to_write.into(), ResourceRecord::default()),
-                          BufferType::Additional => additionals.resize(tried_to_write.into(), ResourceRecord::default()),
-                        }
-                      }
-                      e => {
-                        tracing::error!(err=%e, "mdns client: failed to read message");
-                        continue;
-                      }
+            Ok(entry) => {
+
+              match entry {
+                Either::Left(entry) => {
+                  if let Err(e) = tx.send(Ok(entry)).await {
+                    tracing::error!(err=%e, "mdns client: failed to send service entry");
+                  }
+                },
+                Either::Right(name) => {
+                  let q = Endpoint::prepare_question(Label::from(name.as_str()), false);
+                  let mut qs = [q];
+                  let msg = Message::new(0, Flags::new(), &mut qs, &mut [], &mut [], &mut []);
+                  let space_needed = msg.space_needed();
+                  let mut buf = Buffer::zerod(space_needed);
+                  let len = msg.write(&mut buf).unwrap();
+
+                  if let Some(ref client) = self.v4 {
+                    if let Some((_, ref conn)) = client.unicast_conn {
+                      conn.send_to(&buf[..len], (IPV4_MDNS, MDNS_PORT)).await?;
+                    }
+                  }
+
+                  if let Some(ref client) = self.v6 {
+                    if let Some((_, ref conn)) = client.unicast_conn {
+                      conn.send_to(&buf[..len], (IPV6_MDNS, MDNS_PORT)).await?;
                     }
                   }
                 }
-              };
-
-              // match self.endpoint.recv_response::<_, _, HashMap<Label<'_>, ()>>(src_addr, &mut inprogress, msg) {
-              //   Ok(ents) => {
-              //     for e in ents {
-
-              //     }
-              //   }
-              //   Err(e) => {
-              //     tracing::error!(err=%e, "mdns client: failed to handle response");
-              //   }
-              // }
+              }
             }
             Err(e) => {
               tracing::error!(err=%e, "mdns client: failed to receive packet");
@@ -684,35 +687,7 @@ impl<N: Net> Clients<N> {
           }
         }
       }
-      // let recv_fut = async {
-
-      //   ControlFlow::Continue(())
-      // };
-
-      // futures::pin_mut!(recv_fut);
-      // let selector = futures::future::select(finish.as_mut(), recv_fut);
-      // match selector.await {
-      //   futures::future::Either::Left(_) => return Ok(()),
-      //   futures::future::Either::Right((res, _)) => {
-      //     if let ControlFlow::Break(e) = res {
-      //       return Err(e);
-      //     }
-      //   }
-      // }
     }
-  }
-
-  async fn handle_response(
-    &mut self,
-    from: SocketAddr,
-    msg: Vec<u8>,
-    inprogress: &mut InprogressCache<
-      '_,
-      HashMap<Label<'_>, mdns_proto::ServiceEntry<'_>>,
-      HashMap<Label<'_>, Label<'_>>,
-    >,
-  ) -> Result<(), mdns_proto::error::Error<Infallible, Infallible>> {
-    Ok(())
   }
 
   async fn new(
@@ -728,8 +703,6 @@ impl<N: Net> Clients<N> {
       ));
     }
 
-    let mut endpoint = SlabEndpoint::client();
-
     // Establish unicast connections
     let mut uconn4 = if v4 {
       match unicast_udp4_socket(ipv4_interface).and_then(<N::UdpSocket as TryFrom<_>>::try_from) {
@@ -739,8 +712,7 @@ impl<N: Net> Clients<N> {
         }
         Ok(conn) => {
           let addr = conn.local_addr()?;
-          let ch = endpoint.connect().unwrap();
-          Some((addr, ch, Arc::new(conn)))
+          Some((addr, Arc::new(conn)))
         }
       }
     } else {
@@ -755,8 +727,7 @@ impl<N: Net> Clients<N> {
         }
         Ok(conn) => {
           let addr = conn.local_addr()?;
-          let ch = endpoint.connect().unwrap();
-          Some((addr, ch, Arc::new(conn)))
+          Some((addr, Arc::new(conn)))
         }
       }
     } else {
@@ -774,8 +745,7 @@ impl<N: Net> Clients<N> {
         }
         Ok(conn) => {
           let addr = conn.local_addr()?;
-          let ch = endpoint.connect().unwrap();
-          Some((addr, ch, Arc::new(conn)))
+          Some((addr, Arc::new(conn)))
         }
       }
     } else {
@@ -792,8 +762,7 @@ impl<N: Net> Clients<N> {
         }
         Ok(conn) => {
           let addr = conn.local_addr()?;
-          let ch = endpoint.connect().unwrap();
-          Some((addr, ch, Arc::new(conn)))
+          Some((addr, Arc::new(conn)))
         }
       }
     } else {
@@ -829,7 +798,6 @@ impl<N: Net> Clients<N> {
 
     let v4_client = if uconn4.is_some() || mconn4.is_some() {
       Some(Client {
-        endpoint: SlabEndpoint::client(),
         unicast_conn: uconn4,
         multicast_conn: mconn4,
       })
@@ -839,7 +807,6 @@ impl<N: Net> Clients<N> {
 
     let v6_client = if uconn6.is_some() || mconn6.is_some() {
       Some(Client {
-        endpoint: SlabEndpoint::client(),
         unicast_conn: uconn6,
         multicast_conn: mconn6,
       })
@@ -850,37 +817,37 @@ impl<N: Net> Clients<N> {
     Ok(Self {
       v4: v4_client,
       v6: v6_client,
-      endpoint: SlabEndpoint::client(),
     })
   }
 }
 
 struct Client<N: Net> {
-  endpoint: SlabEndpoint,
-  unicast_conn: Option<(SocketAddr, ConnectionHandle, Arc<N::UdpSocket>)>,
-  multicast_conn: Option<(SocketAddr, ConnectionHandle, Arc<N::UdpSocket>)>,
+  unicast_conn: Option<(SocketAddr, Arc<N::UdpSocket>)>,
+  multicast_conn: Option<(SocketAddr, Arc<N::UdpSocket>)>,
 }
 
 impl<N: Net> Client<N> {
   fn query(
     &self,
-    tx: Sender<(SocketAddr, Vec<u8>)>,
+    cache: Arc<Mutex<InprogressCache>>,
+    tx: Sender<Either<ServiceEntry, SmolStr>>,
     shutdown_rx: Receiver<()>,
     max_payload_size: usize,
     buf: Buffer,
     len: usize,
   ) {
-    if let Some((addr, _, conn)) = &self.multicast_conn {
+    if let Some((addr, conn)) = &self.multicast_conn {
       N::Runtime::spawn_detach(Self::listen(
         *addr,
         conn.clone(),
+        cache.clone(),
         tx.clone(),
         shutdown_rx.clone(),
         max_payload_size,
       ));
     }
 
-    if let Some((addr, _, conn)) = &self.unicast_conn {
+    if let Some((addr, conn)) = &self.unicast_conn {
       let conn = conn.clone();
       let addr = *addr;
       let tx = tx.clone();
@@ -888,11 +855,16 @@ impl<N: Net> Client<N> {
 
       N::Runtime::spawn_detach(async move {
         tracing::trace!(from=%addr, data=?&buf[..len], "mdns client: sending query by unicast");
-        if let Err(e) = conn.send_to(&buf[..len], addr).await {
+        let target: IpAddr = match addr.ip().is_ipv4() {
+          true => IPV4_MDNS.into(),
+          false => IPV6_MDNS.into(),
+        };
+
+        if let Err(e) = conn.send_to(&buf[..len], (target, MDNS_PORT)).await {
           tracing::error!(err=%e, "mdns client: failed to send query by unicast");
         }
 
-        Self::listen(addr, conn.clone(), tx, shutdown_rx, max_payload_size).await
+        Self::listen(addr, conn.clone(), cache, tx, shutdown_rx, max_payload_size).await
       });
     }
   }
@@ -900,7 +872,8 @@ impl<N: Net> Client<N> {
   async fn listen(
     local_addr: SocketAddr,
     conn: Arc<N::UdpSocket>,
-    tx: Sender<(SocketAddr, Vec<u8>)>,
+    cache: Arc<Mutex<InprogressCache>>,
+    tx: Sender<Either<ServiceEntry, SmolStr>>,
     shutdown_rx: Receiver<()>,
     max_payload_size: usize,
   ) {
@@ -913,49 +886,240 @@ impl<N: Net> Client<N> {
     });
 
     loop {
-      let shutdown_fut = shutdown_rx.recv();
-      let handle = async {
-        match conn.recv_from(&mut buf).fuse().await {
-          Ok((size, src)) => {
-            let data = &buf[..size];
-            tracing::trace!(local_addr=%local_addr, from=%src, data=?data, "mdns client: received packet");
+      futures::select! {
+        _ = shutdown_rx.recv().fuse() => return,
+        res = conn.recv_from(&mut buf).fuse() => {
+          let (size, src) = match res {
+            Ok((size, src)) => (size, src),
+            Err(e) => {
+              tracing::error!(err=%e, "mdns client: failed to receive packet");
+              continue;
+            }
+          };
 
-            let tx = tx.send((src, data.to_vec()));
-            futures::pin_mut!(tx);
-            let shutdown_fut = shutdown_rx.recv();
-            futures::pin_mut!(shutdown_fut);
-            let selector = futures::future::select(tx, shutdown_fut);
+          let data = &buf[..size];
 
-            match selector.await {
-              futures::future::Either::Left((res, _)) => {
-                if let Err(e) = res {
-                  tracing::error!(err=%e, "mdns client: failed to pass packet");
-                  return ControlFlow::Break(());
+          tracing::trace!(local_addr=%local_addr, from=%src, data=?data, "mdns client: received packet");
+
+          let mut questions = SmallVec::new();
+          let mut answers = SmallVec::from([ResourceRecord::default(); 4]);
+          let mut authorities = SmallVec::new();
+          let mut additionals = SmallVec::from([ResourceRecord::default(); 4]);
+
+          let msg = loop {
+            match Message::read(
+              data,
+              &mut questions,
+              &mut answers,
+              &mut authorities,
+              &mut additionals,
+            ) {
+              Ok(msg) => break msg,
+              Err(e) => match e {
+                mdns_proto::error::ProtoError::NotEnoughWriteSpace {
+                  tried_to_write,
+                  buffer_type,
+                  ..
+                } => match buffer_type {
+                  BufferType::Question => {
+                    questions.resize(tried_to_write.into(), Question::default())
+                  }
+                  BufferType::Answer => {
+                    answers.resize(tried_to_write.into(), ResourceRecord::default())
+                  }
+                  BufferType::Authority => {
+                    authorities.resize(tried_to_write.into(), ResourceRecord::default())
+                  }
+                  BufferType::Additional => {
+                    additionals.resize(tried_to_write.into(), ResourceRecord::default())
+                  }
+                },
+                e => {
+                  tracing::error!(err=%e, "mdns client: failed to read message");
+                  continue;
+                }
+              },
+            }
+          };
+
+          let mut modified_cache = HashSet::new();
+          for record in Endpoint::recv(src, &msg) {
+            match record {
+              Err(e) => {
+                tracing::error!(err=%e, "mdns client: failed to parse record");
+              }
+              Ok(record) => {
+                match record {
+                  Response::A { name, addr } => {
+                    let name = name.to_smolstr();
+                    cache.lock().entry(name.clone(), |entry| {
+                      entry.ipv4 = Some(addr);
+                    });
+                    modified_cache.insert(name);
+                  },
+                  Response::AAAA { name, addr, zone } => {
+                    let name = name.to_smolstr();
+                    cache.lock().entry(name.clone(), |entry| {
+                      entry.ipv6 = Some(addr);
+                      entry.zone = zone;
+                    });
+                    modified_cache.insert(name);
+                  },
+                  Response::Ptr(name) => {
+                    cache.lock().entry(name.to_smolstr(), |_| {});
+                  },
+                  Response::Txt { name, txt } => {
+                    let name = name.to_smolstr();
+                    match txt.strings().map(|res| {
+                      res.map(|s| s.to_smolstr())
+                    }).collect::<Result<Arc<[_]>, _>>()
+                    {
+                      Ok(txt) => {
+                        cache.lock().entry(name.clone(), |entry| {
+                          entry.txts = Some(txt);
+                        });
+                        modified_cache.insert(name);
+                      },
+                      Err(e) => {
+                        tracing::error!(err=%e, "mdns client: failed to parse txt record");
+                      }
+                    }
+                  },
+                  Response::Srv { name, srv } => {
+                    let target = srv.target();
+                    let mut cache = cache.lock();
+                    let (n, target) = if target != name {
+                      cache.create_alias(&name, &target)
+                    } else {
+                      (name.to_smolstr(), target.to_smolstr())
+                    };
+
+                    // Update the entry
+                    cache.entry(n.clone(), |entry| {
+                      entry.host = target;
+                      entry.port = srv.port();
+                    });
+                    modified_cache.insert(n);
+                  },
                 }
               }
-              futures::future::Either::Right(_) => return ControlFlow::Break(()),
             }
-
-            ControlFlow::Continue(())
           }
-          Err(e) => {
-            tracing::error!(err=%e, "mdns client: failed to receive packet");
-            return ControlFlow::Continue(());
+
+          let entries = {
+            let mut cache = cache.lock();
+
+            modified_cache.into_iter().filter_map(|name| {
+              let canonical_name = cache.resolve_name(name.clone());
+
+              if let Some(entry) = cache.entries.get_mut(&canonical_name) {
+                if entry.complete() && !entry.sent {
+                  entry.sent = true;
+                  return Some(Either::Left(entry.finalize()));
+                } else if !entry.sent {
+                  // Fire off a node-specific query for incomplete entries
+
+                  // let question = Endpoint::prepare_question(Label::from(name.as_str()), false);
+                  return Some(Either::Right(name));
+                }
+              }
+
+              None
+            }).collect::<SmallVec<_>>()
+          };
+
+          for ent in entries {
+            if let Err(e) = tx.send(ent).await {
+              tracing::error!(err=%e, "mdns client: failed to send service entry");
+            }
           }
         }
-      };
-
-      futures::pin_mut!(shutdown_fut);
-      futures::pin_mut!(handle);
-
-      let selector = futures::future::select(shutdown_fut, handle);
-      match selector.await {
-        futures::future::Either::Left(_) => return,
-        futures::future::Either::Right((cf, _)) => match cf {
-          ControlFlow::Break(()) => return,
-          ControlFlow::Continue(()) => continue,
-        },
       }
     }
+  }
+}
+
+struct InprogressCache {
+  entries: HashMap<SmolStr, ServiceEntryBuilder>,
+  aliases: HashMap<SmolStr, SmolStr>,
+}
+
+impl InprogressCache {
+  fn new() -> Self {
+    Self {
+      entries: HashMap::new(),
+      aliases: HashMap::new(),
+    }
+  }
+
+  // Get the canonical name for a given name (following aliases if needed)
+  fn resolve_name(&self, name: SmolStr) -> SmolStr {
+    let mut current = name;
+    let mut seen = HashSet::new();
+
+    while let Some(target) = self.aliases.get(&current) {
+      if seen.contains(target) {
+        // Circular reference detected, break the cycle
+        break;
+      }
+      seen.insert(current);
+      current = target.clone();
+    }
+
+    current
+  }
+
+  /// Get a mutable reference to an entry, creating it if it doesn't exist.
+  ///
+  /// The entry is then passed to the closure for modification.
+  fn entry<F>(&mut self, name: SmolStr, op: F)
+  where
+    F: FnOnce(&mut ServiceEntryBuilder),
+  {
+    let canonical_name = self.resolve_name(name);
+    match self.entries.entry(canonical_name) {
+      Entry::Occupied(occupied_entry) => {
+        op(occupied_entry.into_mut());
+      }
+      Entry::Vacant(vacant_entry) => {
+        let mut builder = ServiceEntryBuilder::default().with_name(vacant_entry.key().clone());
+        op(&mut builder);
+        vacant_entry.insert(builder);
+      }
+    }
+  }
+
+  // Create an alias from one name to another
+  fn create_alias(&mut self, from: &Label<'_>, to: &Label<'_>) -> (SmolStr, SmolStr) {
+    let to = to.to_smolstr();
+    let canonical_to = self.resolve_name(to.clone());
+    let from = from.to_smolstr();
+
+    // If the 'from' exists as an entry, merge it into 'to'
+    if let Some(from_entry) = self.entries.remove(&from) {
+      self.entry(canonical_to.clone(), |to_entry| {
+        // Merge the entries, keeping non-None values from the original entry
+        if to_entry.port == 0 {
+          to_entry.port = from_entry.port;
+        }
+
+        if to_entry.ipv4.is_none() {
+          to_entry.ipv4 = from_entry.ipv4;
+        }
+
+        if to_entry.ipv6.is_none() {
+          to_entry.ipv6 = from_entry.ipv6;
+          to_entry.zone = from_entry.zone;
+        }
+
+        if to_entry.txts.is_some() {
+          to_entry.txts = from_entry.txts;
+        }
+      });
+    }
+
+    // Create the alias
+    self.aliases.insert(from.clone(), canonical_to);
+    (from, to)
   }
 }

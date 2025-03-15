@@ -3,14 +3,16 @@ use std::net::{Ipv4Addr, Ipv6Addr};
 
 use agnostic_net::Net;
 use futures::StreamExt;
-use smol_str::SmolStr;
+use mdns_proto::proto::Label;
 
 use crate::{
   ServerOptions,
-  client::{QueryParam, query_with},
   service::Service,
   tests::{make_service, make_service_with_service_name},
-  worksteal::Server,
+  worksteal::{
+    Server,
+    client::{QueryParam, query_with},
+  },
 };
 
 macro_rules! test_suites {
@@ -64,12 +66,12 @@ async fn server_lookup<N: Net>() {
     .unwrap();
 
   #[cfg(target_os = "linux")]
-  let params = QueryParam::new(SmolStr::from("_foobar._tcp"))
+  let params = QueryParam::new(Label::from("_foobar._tcp"))
     .with_timeout(Duration::from_millis(50))
     .with_disable_ipv6(false);
 
   #[cfg(not(target_os = "linux"))]
-  let params = QueryParam::new(SmolStr::from("_foobar._tcp"))
+  let params = QueryParam::new(Label::from("_foobar._tcp"))
     .with_timeout(Duration::from_millis(50))
     .with_disable_ipv6(true);
 
@@ -94,7 +96,7 @@ async fn server_lookup<N: Net>() {
                 .parse::<Ipv6Addr>()
                 .unwrap()
             );
-            assert_eq!(ent.infos()[0].as_str(), "Local web server");
+            assert_eq!(ent.txt()[0].as_str(), "Local web server");
             got_response = true;
           }
           Err(e) => {

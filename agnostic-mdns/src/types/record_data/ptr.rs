@@ -1,4 +1,4 @@
-use mdns_proto::{Label, Serialize};
+use mdns_proto::proto::{Label, Serialize};
 use smol_str::SmolStr;
 use triomphe::Arc;
 
@@ -22,10 +22,18 @@ use crate::ProtoError;
 /// similar to that performed by CNAME, which identifies aliases.  See the
 /// description of the IN-ADDR.ARPA domain for an example.
 /// ```
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Clone, PartialEq, Eq, Hash)]
 pub struct PTR {
   data: Arc<[u8]>,
   name: SmolStr,
+}
+
+impl core::fmt::Debug for PTR {
+  fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+    f.debug_tuple("PTR")
+      .field(&self.name)
+      .finish()
+  }
 }
 
 impl PTR {

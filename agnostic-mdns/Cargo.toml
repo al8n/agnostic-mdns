@@ -29,17 +29,10 @@ keywords = ["mdns", "dns-sd", "zeroconf", "agnostic", "async-mdns"]
 [features]
 default = ["std"]
 std = ["scopeguard/default", "auto_enums/default"]
-slab = ["dep:slab", "mdns-proto/slab"]
-
-# set the max mDNS message size to 1500
-mm_1500 = []
-
-# set the max mDNS message size to 9000
-mm_9000 = []
 
 future = []
 
-worksteal = []
+worksteal = ["parking_lot"]
 tokio = ["worksteal", "agnostic-net/tokio", "std"]
 async-std = ["worksteal", "agnostic-net/async-std", "std"]
 smol = ["worksteal", "agnostic-net/smol", "std"]
@@ -49,7 +42,6 @@ auto_enums = { version = "0.8", default-features = false }
 agnostic-net = { version = "0.2" }
 atomic_refcell = "0.1"
 async-channel = "2"
-# dns-protocol = { version = "0.1", package = "dns-protocol-patch" }
 either = "1"
 futures = "0.3"
 iprobe = "0.1"
@@ -58,14 +50,14 @@ parking_lot = { version = "0.12", optional = true }
 smol_str = "0.3"
 smallvec-wrapper = "0.3"
 scopeguard = { version = "1", default-features = false }
-slab = { version = "0.4", optional = true }
+slab = "0.4"
 
 triomphe = "0.1"
 thiserror = "2"
 
 tracing = "0.1"
 
-mdns-proto.workspace = true
+mdns-proto = { workspace = true, features = ["slab"] }
 
 [target.'cfg(unix)'.dependencies]
 rustix = { version = "1", features = ["system", "net"] }

@@ -13,8 +13,9 @@ use crate::{
 };
 use iprobe::{ipv4, ipv6};
 use mdns_proto::{
-  Endpoint, Message, Pool, Question, ResourceRecord,
   error::{BufferType, ProtoError},
+  proto::{Message, Question, ResourceRecord},
+  server::{Endpoint, SlabEndpoint},
 };
 use smallvec_wrapper::SmallVec;
 
@@ -58,19 +59,17 @@ impl Closer {
 /// A mDNS server, there is no background
 /// thread running to serve the records. This server is synchronous and
 /// will block the current thread until the server is stopped.
-pub struct Server<S, Q, Z> {
+pub struct Server<Z> {
   zone: Z,
-  endpoint: Endpoint<S, Q>,
+  endpoint: SlabEndpoint,
   v4_udp: Option<UdpSocket>,
   v6_udp: Option<UdpSocket>,
   closer: Closer,
   log_empty_responses: bool,
 }
 
-impl<S, Q, Z> Server<S, Q, Z>
+impl<Z> Server<Z>
 where
-  S: Pool<Q>,
-  Q: Pool<u16>,
   Z: Zone,
 {
   /// Creates a new server with the given zone and options.
@@ -103,7 +102,7 @@ where
     Ok((
       Self {
         zone,
-        endpoint: Endpoint::server(),
+        endpoint: Endpoint::new(),
         v4_udp: v4,
         v6_udp: v6,
         closer: closer.clone(),
@@ -177,7 +176,7 @@ where
   }
 
   fn handle_query(
-    endpoint: &mut Endpoint<S, Q>,
+    endpoint: &mut SlabEndpoint,
     conn: &UdpSocket,
     addr: SocketAddr,
     data: &[u8],
@@ -238,7 +237,7 @@ where
       }
     };
 
-    let q = match endpoint.recv_query(ch, req) {
+    let q = match endpoint.recv(ch, req) {
       Err(e) => {
         tracing::error!(from=%addr, err=%e, "mdns server: fail to handle event");
         if let Err(e) = endpoint.drain_connection(ch) {
@@ -250,7 +249,7 @@ where
     };
 
     for question in q.questions() {
-      match endpoint.prepare_response(q.query_handle(), *question) {
+      match endpoint.response(q.query_handle(), *question) {
         Err(e) => {
           tracing::error!(from=%addr, err=%e, "mdns server: fail to handle question");
         }

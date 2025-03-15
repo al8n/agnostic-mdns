@@ -21,10 +21,18 @@ use crate::{
 /// TXT RRs are used to hold descriptive text.  The semantics of the text
 /// depends on the domain where it is found.
 /// ```
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Clone, PartialEq, Eq, Hash)]
 pub struct TXT {
   data: Arc<[u8]>,
   txts: Arc<[SmolStr]>,
+}
+
+impl core::fmt::Debug for TXT {
+  fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+    f.debug_tuple("TXT")
+      .field(&self.txts)
+      .finish()
+  }
 }
 
 impl TXT {

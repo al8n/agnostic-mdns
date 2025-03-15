@@ -3,7 +3,7 @@ use std::{
   str::FromStr,
 };
 
-use mdns_proto::ResourceType;
+use mdns_proto::proto::ResourceType;
 use smol_str::SmolStr;
 use triomphe::Arc;
 

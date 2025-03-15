@@ -1,5 +1,5 @@
 use agnostic_net::runtime::RuntimeLite;
-use mdns_proto::{Label, ResourceRecord, ResourceType};
+use mdns_proto::proto::{Label, ResourceRecord, ResourceType};
 
 pub use agnostic_net as net;
 pub use client::*;
@@ -13,10 +13,7 @@ mod tests;
 
 /// The interface used to integrate with the server and
 /// to serve records dynamically
-pub trait Zone<R>: Send + Sync + 'static {
-  // /// The runtime type
-  // type Runtime: RuntimeLite;
-
+pub trait Zone<R>: core::fmt::Debug + Send + Sync + 'static {
   /// The error type of the zone
   type Error: core::error::Error + Send + Sync + 'static;
 
