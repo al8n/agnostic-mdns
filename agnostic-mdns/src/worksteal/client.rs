@@ -3,7 +3,7 @@ use core::{
   time::Duration,
 };
 use std::{
-  collections::{HashMap, HashSet, hash_map::Entry},
+  collections::{HashMap, hash_map::Entry},
   io,
   net::IpAddr,
   pin::Pin,
@@ -26,7 +26,7 @@ use smol_str::{SmolStr, ToSmolStr, format_smolstr};
 use triomphe::Arc;
 
 use crate::{
-  Buffer, IPV4_MDNS, IPV6_MDNS, MDNS_PORT,
+  Buffer, IPV4_MDNS, IPV6_MDNS, MDNS_PORT, QueryParam,
   utils::{multicast_udp4_socket, multicast_udp6_socket, unicast_udp4_socket, unicast_udp6_socket},
 };
 
@@ -87,7 +87,7 @@ impl ServiceEntry {
 }
 
 /// Returned after we query for a service.
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 struct ServiceEntryBuilder {
   name: SmolStr,
   host: SmolStr,
@@ -97,6 +97,7 @@ struct ServiceEntryBuilder {
   zone: Option<u32>,
   txts: Option<Arc<[SmolStr]>>,
   sent: bool,
+  queried: bool,
 }
 
 impl Default for ServiceEntryBuilder {
@@ -111,6 +112,7 @@ impl Default for ServiceEntryBuilder {
       zone: None,
       txts: None,
       sent: false,
+      queried: false,
     }
   }
 }
@@ -137,326 +139,6 @@ impl ServiceEntryBuilder {
         .map(|ip| SocketAddrV6::new(ip, self.port, 0, self.zone.unwrap_or(0))),
       txt: self.txts.as_ref().unwrap().clone(),
     }
-  }
-}
-
-/// How a lookup is performed.
-#[derive(Clone, Debug)]
-pub struct QueryParam<'a> {
-  service: Label<'a>,
-  domain: Label<'a>,
-  timeout: Duration,
-  ipv4_interface: Option<Ipv4Addr>,
-  ipv6_interface: Option<u32>,
-  cap: Option<usize>,
-  want_unicast_response: bool, // Unicast response desired, as per 5.4 in RFC
-  // Whether to disable usage of IPv4 for MDNS operations. Does not affect discovered addresses.
-  disable_ipv4: bool,
-  // Whether to disable usage of IPv6 for MDNS operations. Does not affect discovered addresses.
-  disable_ipv6: bool,
-}
-
-impl<'a> QueryParam<'a> {
-  /// Creates a new query parameter with default values.
-  #[inline]
-  pub fn new(service: Label<'a>) -> Self {
-    Self {
-      service,
-      domain: Label::default(),
-      timeout: Duration::from_secs(1),
-      ipv4_interface: None,
-      ipv6_interface: None,
-      want_unicast_response: false,
-      disable_ipv4: false,
-      disable_ipv6: false,
-      cap: None,
-    }
-  }
-
-  /// Sets the domain to search in.
-  ///
-  /// ## Example
-  ///
-  /// ```rust
-  /// use agnostic_mdns::QueryParam;
-  ///
-  /// let params = QueryParam::new("service._tcp".into())
-  ///   .with_domain("local.".into());
-  /// ```
-  pub fn with_domain(mut self, domain: Label<'a>) -> Self {
-    self.domain = domain;
-    self
-  }
-
-  /// Returns the domain to search in.
-  ///
-  /// ## Example
-  ///
-  /// ```rust
-  /// use agnostic_mdns::QueryParam;
-  ///
-  /// let params = QueryParam::new("service._tcp".into())
-  ///   .with_domain("local.".into());
-  ///
-  /// assert_eq!(params.domain().as_str(), "local.");
-  pub const fn domain(&self) -> &Label<'a> {
-    &self.domain
-  }
-
-  /// Sets the service to search for.
-  ///
-  /// ## Example
-  ///
-  /// ```rust
-  /// use agnostic_mdns::QueryParam;
-  ///
-  /// let params = QueryParam::new("service._tcp".into())
-  ///   .with_service("service._udp".into());
-  /// ```
-  pub fn with_service(mut self, service: Label<'a>) -> Self {
-    self.service = service;
-    self
-  }
-
-  /// Returns the service to search for.
-  ///
-  /// ## Example
-  ///
-  /// ```rust
-  /// use agnostic_mdns::QueryParam;
-  ///
-  /// let params = QueryParam::new("service._tcp".into())
-  ///   .with_service("service._udp".into());
-  ///
-  /// assert_eq!(params.service().as_str(), "service._udp");
-  pub const fn service(&self) -> &Label<'a> {
-    &self.service
-  }
-
-  /// Sets the timeout for the query.
-  ///
-  /// ## Example
-  ///
-  /// ```rust
-  /// use agnostic_mdns::QueryParam;
-  ///
-  /// let params = QueryParam::new("service._tcp".into())
-  ///   .with_timeout(std::time::Duration::from_secs(1));
-  /// ```
-  pub fn with_timeout(mut self, timeout: Duration) -> Self {
-    self.timeout = timeout;
-    self
-  }
-
-  /// Returns the timeout for the query.
-  ///
-  /// ## Example
-  ///
-  /// ```rust
-  /// use agnostic_mdns::QueryParam;
-  ///
-  /// let params = QueryParam::new("service._tcp".into())
-  ///   .with_timeout(std::time::Duration::from_secs(1));
-  ///
-  /// assert_eq!(params.timeout(), std::time::Duration::from_secs(1));
-  /// ```
-  pub const fn timeout(&self) -> Duration {
-    self.timeout
-  }
-
-  /// Sets the IPv4 interface to use for queries.
-  ///
-  /// ## Example
-  ///
-  /// ```rust
-  /// use agnostic_mdns::QueryParam;
-  ///
-  /// let params = QueryParam::new("service._tcp".into())
-  ///   .with_ipv4_interface("0.0.0.0".parse().unwrap());
-  /// ```
-  pub fn with_ipv4_interface(mut self, ipv4_interface: Ipv4Addr) -> Self {
-    self.ipv4_interface = Some(ipv4_interface);
-    self
-  }
-
-  /// Returns the IPv4 interface to use for queries.
-  ///
-  /// ## Example
-  ///
-  /// ```rust
-  /// use agnostic_mdns::QueryParam;
-  ///
-  /// let params = QueryParam::new("service._tcp".into())
-  ///  .with_ipv4_interface("0.0.0.0".parse().unwrap());
-  ///
-  /// assert_eq!(params.ipv4_interface().unwrap(), &"0.0.0.0".parse::<std::net::Ipv4Addr>().unwrap());
-  /// ```
-  pub const fn ipv4_interface(&self) -> Option<&Ipv4Addr> {
-    self.ipv4_interface.as_ref()
-  }
-
-  /// Sets the IPv6 interface to use for queries.
-  ///
-  /// ## Example
-  ///
-  /// ```rust
-  /// use agnostic_mdns::QueryParam;
-  ///
-  /// let params = QueryParam::new("service._tcp".into())
-  ///   .with_ipv6_interface(1);
-  /// ```
-  pub fn with_ipv6_interface(mut self, ipv6_interface: u32) -> Self {
-    self.ipv6_interface = Some(ipv6_interface);
-    self
-  }
-
-  /// Returns the IPv6 interface to use for queries.
-  ///
-  /// ## Example
-  ///
-  /// ```rust
-  /// use agnostic_mdns::QueryParam;
-  ///
-  /// let params = QueryParam::new("service._tcp".into())
-  ///   .with_ipv6_interface(1);
-  /// assert_eq!(params.ipv6_interface().unwrap(), 1);
-  /// ```
-  pub const fn ipv6_interface(&self) -> Option<u32> {
-    self.ipv6_interface
-  }
-
-  /// Sets whether to request unicast responses.
-  ///
-  /// ## Example
-  ///
-  /// ```rust
-  /// use agnostic_mdns::QueryParam;
-  ///
-  /// let params = QueryParam::new("service._tcp".into())
-  ///   .with_unicast_response(true);
-  /// ```
-  pub fn with_unicast_response(mut self, want_unicast_response: bool) -> Self {
-    self.want_unicast_response = want_unicast_response;
-    self
-  }
-
-  /// Returns whether to request unicast responses.
-  ///
-  /// ## Example
-  ///
-  /// ```rust
-  /// use agnostic_mdns::QueryParam;
-  ///
-  /// let params = QueryParam::new("service._tcp".into())
-  ///   .with_unicast_response(true);
-  ///
-  /// assert_eq!(params.want_unicast_response(), true);
-  /// ```
-  pub const fn want_unicast_response(&self) -> bool {
-    self.want_unicast_response
-  }
-
-  /// Sets whether to disable IPv4 for MDNS operations.
-  ///
-  /// ## Example
-  ///
-  /// ```rust
-  /// use agnostic_mdns::QueryParam;
-  ///
-  /// let params = QueryParam::new("service._tcp".into())
-  ///   .with_disable_ipv4(true);
-  /// ```
-  pub fn with_disable_ipv4(mut self, disable_ipv4: bool) -> Self {
-    self.disable_ipv4 = disable_ipv4;
-    self
-  }
-
-  /// Returns whether to disable IPv4 for MDNS operations.
-  ///
-  /// ## Example
-  ///
-  /// ```rust
-  /// use agnostic_mdns::QueryParam;
-  ///
-  /// let params = QueryParam::new("service._tcp".into())
-  ///   .with_disable_ipv4(true);
-  ///
-  /// assert_eq!(params.disable_ipv4(), true);
-  /// ```
-  pub const fn disable_ipv4(&self) -> bool {
-    self.disable_ipv4
-  }
-
-  /// Sets whether to disable IPv6 for MDNS operations.
-  ///
-  /// ## Example
-  ///
-  /// ```rust
-  /// use agnostic_mdns::QueryParam;
-  ///
-  /// let params = QueryParam::new("service._tcp".into())
-  ///   .with_disable_ipv6(true);
-  /// ```
-  pub fn with_disable_ipv6(mut self, disable_ipv6: bool) -> Self {
-    self.disable_ipv6 = disable_ipv6;
-    self
-  }
-
-  /// Returns whether to disable IPv6 for MDNS operations.
-  ///
-  /// ## Example
-  ///
-  /// ```rust
-  /// use agnostic_mdns::QueryParam;
-  ///
-  /// let params = QueryParam::new("service._tcp".into())
-  ///   .with_disable_ipv6(true);
-  ///
-  /// assert_eq!(params.disable_ipv6(), true);
-  /// ```
-  pub const fn disable_ipv6(&self) -> bool {
-    self.disable_ipv6
-  }
-
-  /// Returns the channel capacity for the [`Lookup`] stream.
-  ///
-  /// If `None`, the channel is unbounded.
-  ///
-  /// Default is `None`.
-  ///
-  /// ## Example
-  ///
-  /// ```rust
-  /// use agnostic_mdns::QueryParam;
-  ///
-  /// let params = QueryParam::new("service._tcp".into())
-  ///   .with_capacity(Some(10));
-  ///
-  /// assert_eq!(params.capacity().unwrap(), 10);
-  /// ```
-  #[inline]
-  pub const fn capacity(&self) -> Option<usize> {
-    self.cap
-  }
-
-  /// Sets the channel capacity for the [`Lookup`] stream.
-  ///
-  /// If `None`, the channel is unbounded.
-  ///
-  /// Default is `None`.
-  ///
-  /// ## Example
-  ///
-  /// ```rust
-  /// use agnostic_mdns::QueryParam;
-  ///
-  /// let params = QueryParam::new("service._tcp".into())
-  ///  .with_capacity(Some(10));
-  /// ```
-  #[inline]
-  pub fn with_capacity(mut self, cap: Option<usize>) -> Self {
-    self.cap = cap;
-    self
   }
 }
 
@@ -652,7 +334,6 @@ impl<N: Net> Clients<N> {
         res = msg_rx.recv().fuse() => {
           match res {
             Ok(entry) => {
-
               match entry {
                 Either::Left(entry) => {
                   if let Err(e) = tx.send(Ok(entry)).await {
@@ -942,7 +623,6 @@ impl<N: Net> Client<N> {
             }
           };
 
-          let mut modified_cache = HashSet::new();
           for record in Endpoint::recv(src, &msg) {
             match record {
               Err(e) => {
@@ -952,18 +632,16 @@ impl<N: Net> Client<N> {
                 match record {
                   Response::A { name, addr } => {
                     let name = name.to_smolstr();
-                    cache.lock().entry(name.clone(), |entry| {
+                    cache.lock().entry(name, |entry| {
                       entry.ipv4 = Some(addr);
                     });
-                    modified_cache.insert(name);
                   },
                   Response::AAAA { name, addr, zone } => {
                     let name = name.to_smolstr();
-                    cache.lock().entry(name.clone(), |entry| {
+                    cache.lock().entry(name, |entry| {
                       entry.ipv6 = Some(addr);
                       entry.zone = zone;
                     });
-                    modified_cache.insert(name);
                   },
                   Response::Ptr(name) => {
                     cache.lock().entry(name.to_smolstr(), |_| {});
@@ -975,10 +653,9 @@ impl<N: Net> Client<N> {
                     }).collect::<Result<Arc<[_]>, _>>()
                     {
                       Ok(txt) => {
-                        cache.lock().entry(name.clone(), |entry| {
+                        cache.lock().entry(name, |entry| {
                           entry.txts = Some(txt);
                         });
-                        modified_cache.insert(name);
                       },
                       Err(e) => {
                         tracing::error!(err=%e, "mdns client: failed to parse txt record");
@@ -988,18 +665,17 @@ impl<N: Net> Client<N> {
                   Response::Srv { name, srv } => {
                     let target = srv.target();
                     let mut cache = cache.lock();
-                    let (n, target) = if target != name {
+                    let (name, target) = if target != name {
                       cache.create_alias(&name, &target)
                     } else {
                       (name.to_smolstr(), target.to_smolstr())
                     };
 
                     // Update the entry
-                    cache.entry(n.clone(), |entry| {
+                    cache.entry(name, |entry| {
                       entry.host = target;
                       entry.port = srv.port();
                     });
-                    modified_cache.insert(n);
                   },
                 }
               }
@@ -1008,23 +684,23 @@ impl<N: Net> Client<N> {
 
           let entries = {
             let mut cache = cache.lock();
-
-            modified_cache.into_iter().filter_map(|name| {
-              let canonical_name = cache.resolve_name(name.clone());
-
-              if let Some(entry) = cache.entries.get_mut(&canonical_name) {
-                if entry.complete() && !entry.sent {
-                  entry.sent = true;
-                  return Some(Either::Left(entry.finalize()));
-                } else if !entry.sent {
-                  // Fire off a node-specific query for incomplete entries
-
-                  // let question = Endpoint::prepare_question(Label::from(name.as_str()), false);
-                  return Some(Either::Right(name));
+            cache.entries.iter_mut().filter_map(|(name, ent)| {
+              // Check if this entry is complete
+              if ent.complete() {
+                ent.queried = true;
+                if ent.sent {
+                  return None;
                 }
-              }
+                ent.sent = true;
+                Some(Either::Left(ent.finalize()))
+              } else {
+                if ent.queried {
+                  return None;
+                }
 
-              None
+                ent.queried = true;
+                Some(Either::Right(name.clone()))
+              }
             }).collect::<SmallVec<_>>()
           };
 
@@ -1052,23 +728,6 @@ impl InprogressCache {
     }
   }
 
-  // Get the canonical name for a given name (following aliases if needed)
-  fn resolve_name(&self, name: SmolStr) -> SmolStr {
-    let mut current = name;
-    let mut seen = HashSet::new();
-
-    while let Some(target) = self.aliases.get(&current) {
-      if seen.contains(target) {
-        // Circular reference detected, break the cycle
-        break;
-      }
-      seen.insert(current);
-      current = target.clone();
-    }
-
-    current
-  }
-
   /// Get a mutable reference to an entry, creating it if it doesn't exist.
   ///
   /// The entry is then passed to the closure for modification.
@@ -1076,8 +735,12 @@ impl InprogressCache {
   where
     F: FnOnce(&mut ServiceEntryBuilder),
   {
-    let canonical_name = self.resolve_name(name);
-    match self.entries.entry(canonical_name) {
+    let name = match self.aliases.get(&name) {
+      Some(target) => target,
+      None => &name,
+    };
+
+    match self.entries.entry(name.clone()) {
       Entry::Occupied(occupied_entry) => {
         op(occupied_entry.into_mut());
       }
@@ -1092,34 +755,10 @@ impl InprogressCache {
   // Create an alias from one name to another
   fn create_alias(&mut self, from: &Label<'_>, to: &Label<'_>) -> (SmolStr, SmolStr) {
     let to = to.to_smolstr();
-    let canonical_to = self.resolve_name(to.clone());
     let from = from.to_smolstr();
 
-    // If the 'from' exists as an entry, merge it into 'to'
-    if let Some(from_entry) = self.entries.remove(&from) {
-      self.entry(canonical_to.clone(), |to_entry| {
-        // Merge the entries, keeping non-None values from the original entry
-        if to_entry.port == 0 {
-          to_entry.port = from_entry.port;
-        }
-
-        if to_entry.ipv4.is_none() {
-          to_entry.ipv4 = from_entry.ipv4;
-        }
-
-        if to_entry.ipv6.is_none() {
-          to_entry.ipv6 = from_entry.ipv6;
-          to_entry.zone = from_entry.zone;
-        }
-
-        if to_entry.txts.is_some() {
-          to_entry.txts = from_entry.txts;
-        }
-      });
-    }
-
     // Create the alias
-    self.aliases.insert(from.clone(), canonical_to);
+    self.aliases.insert(to.clone(), from.clone());
     (from, to)
   }
 }

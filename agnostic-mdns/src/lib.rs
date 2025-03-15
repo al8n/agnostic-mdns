@@ -13,6 +13,7 @@ mod tests;
 use std::{
   io,
   net::{Ipv4Addr, Ipv6Addr},
+  time::Duration,
 };
 
 const IPV4_MDNS: Ipv4Addr = Ipv4Addr::new(224, 0, 0, 251);
@@ -24,9 +25,7 @@ const MDNS_PORT: u16 = 5353;
 const MAX_PAYLOAD_SIZE: usize = 9000;
 const MAX_INLINE_PACKET_SIZE: usize = 512;
 
-/// mDNS client
-mod client;
-mod types;
+pub use mdns_proto::{proto::Label, error};
 
 /// synchronous mDNS implementation
 pub mod sync;
@@ -42,10 +41,8 @@ pub mod worksteal;
 /// A builtin service that can be used with the mDNS server
 pub mod service;
 
-pub use client::*;
 pub use iprobe as netprobe;
 pub use smol_str::{SmolStr, format_smolstr};
-pub use types::*;
 
 /// The options for [`Server`].
 #[derive(Clone, Debug)]
@@ -171,95 +168,413 @@ impl ServerOptions {
   }
 }
 
-// /// Types for `tokio` runtime
-// #[cfg(feature = "tokio")]
-// #[cfg_attr(docsrs, doc(cfg(feature = "tokio")))]
-// pub mod tokio {
-//   use std::io;
+/// How a lookup is performed.
+#[derive(Clone, Debug)]
+pub struct QueryParam<'a> {
+  service: Label<'a>,
+  domain: Label<'a>,
+  timeout: Duration,
+  ipv4_interface: Option<Ipv4Addr>,
+  ipv6_interface: Option<u32>,
+  cap: Option<usize>,
+  want_unicast_response: bool, // Unicast response desired, as per 5.4 in RFC
+  // Whether to disable usage of IPv4 for MDNS operations. Does not affect discovered addresses.
+  disable_ipv4: bool,
+  // Whether to disable usage of IPv6 for MDNS operations. Does not affect discovered addresses.
+  disable_ipv6: bool,
+}
 
-//   use super::{Lookup, QueryParam, service::Service};
-//   pub use agnostic_net::{runtime::tokio::TokioRuntime as Runtime, tokio::Net};
-//   use smol_str::SmolStr;
+impl<'a> QueryParam<'a> {
+  /// Creates a new query parameter with default values.
+  #[inline]
+  pub fn new(service: Label<'a>) -> Self {
+    Self {
+      service,
+      domain: Label::from("local"),
+      timeout: Duration::from_secs(1),
+      ipv4_interface: None,
+      ipv6_interface: None,
+      want_unicast_response: false,
+      disable_ipv4: false,
+      disable_ipv6: false,
+      cap: None,
+    }
+  }
 
-//   /// A server that can be used with `tokio` runtime
-//   pub type Server = super::worksteal::Server<Net, Service>;
+  /// Sets the domain to search in.
+  ///
+  /// ## Example
+  ///
+  /// ```rust
+  /// use agnostic_mdns::QueryParam;
+  ///
+  /// let params = QueryParam::new("service._tcp".into())
+  ///   .with_domain("local.".into());
+  /// ```
+  pub fn with_domain(mut self, domain: Label<'a>) -> Self {
+    self.domain = domain;
+    self
+  }
 
-//   /// Looks up a given service, in a domain, waiting at most
-//   /// for a timeout before finishing the query. The results are streamed
-//   /// to a channel. Sends will not block, so clients should make sure to
-//   /// either read or buffer. This method will attempt to stop the query
-//   /// on cancellation.
-//   #[inline]
-//   pub async fn query_with(params: QueryParam) -> io::Result<Lookup> {
-//     super::client::query_with::<Net>(params).await
-//   }
+  /// Returns the domain to search in.
+  ///
+  /// ## Example
+  ///
+  /// ```rust
+  /// use agnostic_mdns::{QueryParam, proto::Label};
+  ///
+  /// let params = QueryParam::new("service._tcp".into())
+  ///   .with_domain("local.".into());
+  ///
+  /// assert_eq!(params.domain(), Label::from("local"));
+  pub const fn domain(&self) -> &Label<'a> {
+    &self.domain
+  }
 
-//   /// Similar to [`query_with`], however it uses all the default parameters
-//   #[inline]
-//   pub async fn lookup(service: SmolStr) -> io::Result<Lookup> {
-//     query_with(QueryParam::new(service)).await
-//   }
-// }
+  /// Sets the service to search for.
+  ///
+  /// ## Example
+  ///
+  /// ```rust
+  /// use agnostic_mdns::QueryParam;
+  ///
+  /// let params = QueryParam::new("service._tcp".into())
+  ///   .with_service("service._udp".into());
+  /// ```
+  pub fn with_service(mut self, service: Label<'a>) -> Self {
+    self.service = service;
+    self
+  }
 
-// /// Types for `smol` runtime
-// #[cfg(feature = "smol")]
-// #[cfg_attr(docsrs, doc(cfg(feature = "smol")))]
-// pub mod smol {
-//   use super::{Lookup, QueryParam, service::Service};
-//   use std::io;
+  /// Returns the service to search for.
+  ///
+  /// ## Example
+  ///
+  /// ```rust
+  /// use agnostic_mdns::QueryParam;
+  ///
+  /// let params = QueryParam::new("service._tcp".into())
+  ///   .with_service("service._udp".into());
+  ///
+  /// assert_eq!(params.service().as_str(), "service._udp");
+  pub const fn service(&self) -> &Label<'a> {
+    &self.service
+  }
 
-//   pub use agnostic_net::{runtime::smol::SmolRuntime as Runtime, smol::Net};
-//   use smol_str::SmolStr;
+  /// Sets the timeout for the query.
+  ///
+  /// ## Example
+  ///
+  /// ```rust
+  /// use agnostic_mdns::QueryParam;
+  ///
+  /// let params = QueryParam::new("service._tcp".into())
+  ///   .with_timeout(std::time::Duration::from_secs(1));
+  /// ```
+  pub fn with_timeout(mut self, timeout: Duration) -> Self {
+    self.timeout = timeout;
+    self
+  }
 
-//   /// A server that can be used with `smol` runtime
-//   pub type Server = super::worksteal::Server<Net, Service>;
+  /// Returns the timeout for the query.
+  ///
+  /// ## Example
+  ///
+  /// ```rust
+  /// use agnostic_mdns::QueryParam;
+  ///
+  /// let params = QueryParam::new("service._tcp".into())
+  ///   .with_timeout(std::time::Duration::from_secs(1));
+  ///
+  /// assert_eq!(params.timeout(), std::time::Duration::from_secs(1));
+  /// ```
+  pub const fn timeout(&self) -> Duration {
+    self.timeout
+  }
 
-//   /// Looks up a given service, in a domain, waiting at most
-//   /// for a timeout before finishing the query. The results are streamed
-//   /// to a channel. Sends will not block, so clients should make sure to
-//   /// either read or buffer. This method will attempt to stop the query
-//   /// on cancellation.
-//   #[inline]
-//   pub async fn query_with(params: QueryParam) -> io::Result<Lookup> {
-//     super::client::query_with::<Net>(params).await
-//   }
+  /// Sets the IPv4 interface to use for queries.
+  ///
+  /// ## Example
+  ///
+  /// ```rust
+  /// use agnostic_mdns::QueryParam;
+  ///
+  /// let params = QueryParam::new("service._tcp".into())
+  ///   .with_ipv4_interface("0.0.0.0".parse().unwrap());
+  /// ```
+  pub fn with_ipv4_interface(mut self, ipv4_interface: Ipv4Addr) -> Self {
+    self.ipv4_interface = Some(ipv4_interface);
+    self
+  }
 
-//   /// Similar to [`query_with`], however it uses all the default parameters
-//   #[inline]
-//   pub async fn lookup(service: SmolStr) -> io::Result<Lookup> {
-//     query_with(QueryParam::new(service)).await
-//   }
-// }
+  /// Returns the IPv4 interface to use for queries.
+  ///
+  /// ## Example
+  ///
+  /// ```rust
+  /// use agnostic_mdns::QueryParam;
+  ///
+  /// let params = QueryParam::new("service._tcp".into())
+  ///  .with_ipv4_interface("0.0.0.0".parse().unwrap());
+  ///
+  /// assert_eq!(params.ipv4_interface().unwrap(), &"0.0.0.0".parse::<std::net::Ipv4Addr>().unwrap());
+  /// ```
+  pub const fn ipv4_interface(&self) -> Option<&Ipv4Addr> {
+    self.ipv4_interface.as_ref()
+  }
 
-// /// Types for `async-std` runtime
-// #[cfg(feature = "async-std")]
-// #[cfg_attr(docsrs, doc(cfg(feature = "async-std")))]
-// pub mod async_std {
-//   use super::{Lookup, QueryParam, service::Service};
-//   use std::io;
+  /// Sets the IPv6 interface to use for queries.
+  ///
+  /// ## Example
+  ///
+  /// ```rust
+  /// use agnostic_mdns::QueryParam;
+  ///
+  /// let params = QueryParam::new("service._tcp".into())
+  ///   .with_ipv6_interface(1);
+  /// ```
+  pub fn with_ipv6_interface(mut self, ipv6_interface: u32) -> Self {
+    self.ipv6_interface = Some(ipv6_interface);
+    self
+  }
 
-//   pub use agnostic_net::{async_std::Net, runtime::async_std::AsyncStdRuntime as Runtime};
-//   use smol_str::SmolStr;
+  /// Returns the IPv6 interface to use for queries.
+  ///
+  /// ## Example
+  ///
+  /// ```rust
+  /// use agnostic_mdns::QueryParam;
+  ///
+  /// let params = QueryParam::new("service._tcp".into())
+  ///   .with_ipv6_interface(1);
+  /// assert_eq!(params.ipv6_interface().unwrap(), 1);
+  /// ```
+  pub const fn ipv6_interface(&self) -> Option<u32> {
+    self.ipv6_interface
+  }
 
-//   /// A server that can be used with `async-std` runtime
-//   pub type Server = super::worksteal::Server<Net, Service>;
+  /// Sets whether to request unicast responses.
+  ///
+  /// ## Example
+  ///
+  /// ```rust
+  /// use agnostic_mdns::QueryParam;
+  ///
+  /// let params = QueryParam::new("service._tcp".into())
+  ///   .with_unicast_response(true);
+  /// ```
+  pub fn with_unicast_response(mut self, want_unicast_response: bool) -> Self {
+    self.want_unicast_response = want_unicast_response;
+    self
+  }
 
-//   /// Looks up a given service, in a domain, waiting at most
-//   /// for a timeout before finishing the query. The results are streamed
-//   /// to a channel. Sends will not block, so clients should make sure to
-//   /// either read or buffer. This method will attempt to stop the query
-//   /// on cancellation.
-//   #[inline]
-//   pub async fn query_with(params: QueryParam) -> io::Result<Lookup> {
-//     super::client::query_with::<Net>(params).await
-//   }
+  /// Returns whether to request unicast responses.
+  ///
+  /// ## Example
+  ///
+  /// ```rust
+  /// use agnostic_mdns::QueryParam;
+  ///
+  /// let params = QueryParam::new("service._tcp".into())
+  ///   .with_unicast_response(true);
+  ///
+  /// assert_eq!(params.want_unicast_response(), true);
+  /// ```
+  pub const fn want_unicast_response(&self) -> bool {
+    self.want_unicast_response
+  }
 
-//   /// Similar to [`query_with`], however it uses all the default parameters
-//   #[inline]
-//   pub async fn lookup(service: SmolStr) -> io::Result<Lookup> {
-//     query_with(QueryParam::new(service)).await
-//   }
-// }
+  /// Sets whether to disable IPv4 for MDNS operations.
+  ///
+  /// ## Example
+  ///
+  /// ```rust
+  /// use agnostic_mdns::QueryParam;
+  ///
+  /// let params = QueryParam::new("service._tcp".into())
+  ///   .with_disable_ipv4(true);
+  /// ```
+  pub fn with_disable_ipv4(mut self, disable_ipv4: bool) -> Self {
+    self.disable_ipv4 = disable_ipv4;
+    self
+  }
+
+  /// Returns whether to disable IPv4 for MDNS operations.
+  ///
+  /// ## Example
+  ///
+  /// ```rust
+  /// use agnostic_mdns::QueryParam;
+  ///
+  /// let params = QueryParam::new("service._tcp".into())
+  ///   .with_disable_ipv4(true);
+  ///
+  /// assert_eq!(params.disable_ipv4(), true);
+  /// ```
+  pub const fn disable_ipv4(&self) -> bool {
+    self.disable_ipv4
+  }
+
+  /// Sets whether to disable IPv6 for MDNS operations.
+  ///
+  /// ## Example
+  ///
+  /// ```rust
+  /// use agnostic_mdns::QueryParam;
+  ///
+  /// let params = QueryParam::new("service._tcp".into())
+  ///   .with_disable_ipv6(true);
+  /// ```
+  pub fn with_disable_ipv6(mut self, disable_ipv6: bool) -> Self {
+    self.disable_ipv6 = disable_ipv6;
+    self
+  }
+
+  /// Returns whether to disable IPv6 for MDNS operations.
+  ///
+  /// ## Example
+  ///
+  /// ```rust
+  /// use agnostic_mdns::QueryParam;
+  ///
+  /// let params = QueryParam::new("service._tcp".into())
+  ///   .with_disable_ipv6(true);
+  ///
+  /// assert_eq!(params.disable_ipv6(), true);
+  /// ```
+  pub const fn disable_ipv6(&self) -> bool {
+    self.disable_ipv6
+  }
+
+  /// Returns the channel capacity for the [`Lookup`] stream.
+  ///
+  /// If `None`, the channel is unbounded.
+  ///
+  /// Default is `None`.
+  ///
+  /// ## Example
+  ///
+  /// ```rust
+  /// use agnostic_mdns::QueryParam;
+  ///
+  /// let params = QueryParam::new("service._tcp".into())
+  ///   .with_capacity(Some(10));
+  ///
+  /// assert_eq!(params.capacity().unwrap(), 10);
+  /// ```
+  #[inline]
+  pub const fn capacity(&self) -> Option<usize> {
+    self.cap
+  }
+
+  /// Sets the channel capacity for the [`Lookup`] stream.
+  ///
+  /// If `None`, the channel is unbounded.
+  ///
+  /// Default is `None`.
+  ///
+  /// ## Example
+  ///
+  /// ```rust
+  /// use agnostic_mdns::QueryParam;
+  ///
+  /// let params = QueryParam::new("service._tcp".into())
+  ///  .with_capacity(Some(10));
+  /// ```
+  #[inline]
+  pub fn with_capacity(mut self, cap: Option<usize>) -> Self {
+    self.cap = cap;
+    self
+  }
+}
+
+/// Types for `tokio` runtime
+#[cfg(feature = "tokio")]
+#[cfg_attr(docsrs, doc(cfg(feature = "tokio")))]
+pub mod tokio {
+  use std::io;
+
+  use super::{worksteal::Lookup, QueryParam, service::Service};
+  pub use agnostic_net::{runtime::tokio::TokioRuntime as Runtime, tokio::Net};
+  use mdns_proto::proto::Label;
+
+  /// A server that can be used with `tokio` runtime
+  pub type Server = super::worksteal::Server<Net, Service>;
+
+  /// Looks up a given service, in a domain, waiting at most
+  /// for a timeout before finishing the query. The results are streamed
+  /// to a channel. Sends will not block, so clients should make sure to
+  /// either read or buffer. This method will attempt to stop the query
+  /// on cancellation.
+  #[inline]
+  pub async fn query_with(params: QueryParam<'_>) -> io::Result<Lookup> {
+    super::worksteal::query_with::<Net>(params).await
+  }
+
+  /// Similar to [`query_with`], however it uses all the default parameters
+  #[inline]
+  pub async fn lookup(service: Label<'_>) -> io::Result<Lookup> {
+    super::worksteal::lookup::<Net>(service).await
+  }
+}
+
+/// Types for `smol` runtime
+#[cfg(feature = "smol")]
+#[cfg_attr(docsrs, doc(cfg(feature = "smol")))]
+pub mod smol {
+  use super::{worksteal::Lookup, QueryParam, Label, service::Service};
+  use std::io;
+
+  pub use agnostic_net::{runtime::smol::SmolRuntime as Runtime, smol::Net};
+
+  /// A server that can be used with `smol` runtime
+  pub type Server = super::worksteal::Server<Net, Service>;
+
+  /// Looks up a given service, in a domain, waiting at most
+  /// for a timeout before finishing the query. The results are streamed
+  /// to a channel. Sends will not block, so clients should make sure to
+  /// either read or buffer. This method will attempt to stop the query
+  /// on cancellation.
+  #[inline]
+  pub async fn query_with(params: QueryParam<'_>) -> io::Result<Lookup> {
+    super::worksteal::query_with::<Net>(params).await
+  }
+
+  /// Similar to [`query_with`], however it uses all the default parameters
+  #[inline]
+  pub async fn lookup(service: Label<'_>) -> io::Result<Lookup> {
+    super::worksteal::lookup::<Net>(service).await
+  }
+}
+
+/// Types for `async-std` runtime
+#[cfg(feature = "async-std")]
+#[cfg_attr(docsrs, doc(cfg(feature = "async-std")))]
+pub mod async_std {
+  use super::{worksteal::Lookup, QueryParam, Label, service::Service};
+  use std::io;
+
+  pub use agnostic_net::{async_std::Net, runtime::async_std::AsyncStdRuntime as Runtime};
+
+  /// A server that can be used with `async-std` runtime
+  pub type Server = super::worksteal::Server<Net, Service>;
+
+  /// Looks up a given service, in a domain, waiting at most
+  /// for a timeout before finishing the query. The results are streamed
+  /// to a channel. Sends will not block, so clients should make sure to
+  /// either read or buffer. This method will attempt to stop the query
+  /// on cancellation.
+  #[inline]
+  pub async fn query_with(params: QueryParam<'_>) -> io::Result<Lookup> {
+    super::worksteal::query_with::<Net>(params).await
+  }
+
+  /// Similar to [`query_with`], however it uses all the default parameters
+  #[inline]
+  pub async fn lookup(service: Label<'_>) -> io::Result<Lookup> {
+    super::worksteal::lookup::<Net>(service).await
+  }
+}
 
 mod utils;
 
@@ -326,7 +641,7 @@ fn hostname_fqdn() -> io::Result<SmolStr> {
   return {
     let name = rustix::system::uname();
     let name = name.nodename().to_string_lossy();
-    Ok(format_smolstr!("{}.", name.as_ref()))
+    Ok(format_smolstr!("{}.", Label::from(name.as_ref())))
   };
 
   #[cfg(windows)]
@@ -334,7 +649,7 @@ fn hostname_fqdn() -> io::Result<SmolStr> {
     match ::hostname::get() {
       Ok(name) => {
         let name = name.to_string_lossy();
-        Ok(format_smolstr!("{}.", name.as_ref()))
+        Ok(format_smolstr!("{}.", Label::from(name.as_ref())))
       }
       Err(e) => Err(e),
     }
@@ -353,12 +668,6 @@ where
   io::Error::new(io::ErrorKind::InvalidInput, e)
 }
 
-fn invalid_data_err<E>(e: E) -> io::Error
-where
-  E: Into<Box<dyn std::error::Error + Send + Sync>>,
-{
-  io::Error::new(io::ErrorKind::InvalidData, e)
-}
 
 #[allow(clippy::large_enum_variant)]
 #[derive(Clone)]

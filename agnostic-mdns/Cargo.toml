@@ -11,26 +11,24 @@ rust-version = "1.85.0"
 categories = ["network-programming"]
 keywords = ["mdns", "dns-sd", "zeroconf", "agnostic", "async-mdns"]
 
-# [[example]]
-# name = "tokio"
-# path = "examples/tokio.rs"
-# required-features = ["tokio"]
+[[example]]
+name = "tokio"
+path = "examples/tokio.rs"
+required-features = ["tokio"]
 
-# [[example]]
-# name = "async-std"
-# path = "examples/async_std.rs"
-# required-features = ["async-std"]
+[[example]]
+name = "async-std"
+path = "examples/async_std.rs"
+required-features = ["async-std"]
 
-# [[example]]
-# name = "smol"
-# path = "examples/smol.rs"
-# required-features = ["smol"]
+[[example]]
+name = "smol"
+path = "examples/smol.rs"
+required-features = ["smol"]
 
 [features]
 default = ["std"]
 std = ["scopeguard/default", "auto_enums/default"]
-
-future = []
 
 worksteal = ["parking_lot"]
 tokio = ["worksteal", "agnostic-net/tokio", "std"]

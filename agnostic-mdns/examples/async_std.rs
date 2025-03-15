@@ -1,21 +1,21 @@
 use std::time::Duration;
 
 use agnostic_mdns::{
-  QueryParam, ServerOptions, ServiceBuilder, SmolStr, hostname,
-  smol::{Server, query_with},
+  QueryParam, ServerOptions, service::ServiceBuilder, SmolStr,
+  async_std::{Server, query_with},
+  hostname,
 };
 use futures::StreamExt;
 
 fn main() {
-  smol::block_on(async move {
+  async_std::task::block_on(async move {
     let host = hostname().unwrap();
     let info = SmolStr::new("My awesome service");
-    let service = ServiceBuilder::new(host.clone(), "_foobar._tcp".into())
+    let service = ServiceBuilder::new(host.as_str().into(), "_foobar._tcp".into())
       .with_txt_record(info)
       .with_port(80)
       .with_ip("192.168.0.3".parse().unwrap())
       .finalize()
-      .await
       .unwrap();
 
     // Create the mDNS server, defer shutdown

@@ -1,14 +1,9 @@
-use std::{
-  ops::{Range, RangeFrom},
-  sync::atomic::{AtomicU16, Ordering},
-};
+use core::ops::{Range, RangeFrom};
 
 use smol_str::SmolStr;
 use triomphe::Arc;
 
-use mdns_proto::proto::{Label, ResourceRecord, ResourceType, Serialize};
-
-use crate::ProtoError;
+use mdns_proto::{error::ProtoError, proto::{Label, Serialize}};
 
 /// [RFC 2782, DNS SRV RR, February 2000](https://tools.ietf.org/html/rfc2782)
 ///
@@ -115,7 +110,6 @@ impl SRV {
     buf[Self::PORT_RANGE].copy_from_slice(port.to_be_bytes().as_ref());
     label
       .serialize(&mut buf[Self::TARGET_RANGE])
-      .map_err(|_| ProtoError::NameTooLong)
       .map(|size| {
         buf.truncate(Self::TARGET_OFFSET + size);
         Self {
@@ -135,18 +129,6 @@ impl SRV {
     &self.data
   }
 
-  /// Returns a resource record from the `SRV`.
-  #[inline]
-  pub fn to_resource_record<'a>(
-    &'a self,
-    name: &'a str,
-    ty: ResourceType,
-    class: u16,
-    ttl: u32,
-  ) -> ResourceRecord<'a> {
-    ResourceRecord::new(name, ty, class, ttl, self.data())
-  }
-
   /// ```text
   ///  Priority
   /// The priority of this target host.  A client MUST attempt to
@@ -157,8 +139,7 @@ impl SRV {
   /// ```
   #[inline]
   pub fn priority(&self) -> u16 {
-    let val = unsafe { &*(self.data[Self::PRIORITY_RANGE].as_ptr() as *const AtomicU16) };
-    u16::from_be(val.load(Ordering::Acquire))
+    u16::from_be_bytes(self.data[Self::PRIORITY_RANGE].try_into().unwrap())
   }
 
   /// ```text
@@ -200,8 +181,7 @@ impl SRV {
   /// ```
   #[inline]
   pub fn weight(&self) -> u16 {
-    let val = unsafe { &*(self.data[Self::WEIGHT_RANGE].as_ptr() as *const AtomicU16) };
-    u16::from_be(val.load(Ordering::Acquire))
+    u16::from_be_bytes(self.data[Self::WEIGHT_RANGE].try_into().unwrap())
   }
 
   /// ```text
@@ -213,51 +193,6 @@ impl SRV {
   /// ```
   #[inline]
   pub fn port(&self) -> u16 {
-    let val = unsafe { &*(self.data[Self::PORT_RANGE].as_ptr() as *const AtomicU16) };
-    u16::from_be(val.load(Ordering::Acquire))
-  }
-
-  /// Sets the priority of the SRV record data.
-  ///
-  /// See [`priority`](#method.priority) for more information.
-  #[inline]
-  pub fn update_priority(&self, val: u16) {
-    let priority = unsafe { &*(self.data[Self::PRIORITY_RANGE].as_ptr() as *const AtomicU16) };
-    priority.store(val.to_be(), Ordering::Release);
-  }
-
-  /// Sets the weight of the SRV record data.
-  ///
-  /// See [`weight`](#method.weight) for more information.
-  #[inline]
-  pub fn update_weight(&self, val: u16) {
-    let weight = unsafe { &*(self.data[Self::WEIGHT_RANGE].as_ptr() as *const AtomicU16) };
-    weight.store(val.to_be(), Ordering::Release);
-  }
-
-  /// Updates the port of the SRV record data.
-  ///
-  /// See [`port`](#method.port) for more information.
-  #[inline]
-  pub fn set_port(&self, val: u16) {
-    let port = unsafe { &*(self.data[Self::PORT_RANGE].as_ptr() as *const AtomicU16) };
-    port.store(val.to_be(), Ordering::Release);
-  }
-
-  /// ```text
-  ///  Target
-  /// The domain name of the target host.  There MUST be one or more
-  /// address records for this name, the name MUST NOT be an alias (in
-  /// the sense of RFC 1034 or RFC 2181).  Implementors are urged, but
-  /// not required, to return the address record(s) in the Additional
-  /// Data section.  Unless and until permitted by future standards
-  /// action, name compression is not to be used for this field.
-  ///
-  /// A Target of "." means that the service is decidedly not
-  /// available at this domain.
-  /// ```
-  #[inline]
-  pub fn target(&self) -> &str {
-    &self.target
+    u16::from_be_bytes(self.data[Self::PORT_RANGE].try_into().unwrap())
   }
 }

@@ -11,7 +11,7 @@ use futures::{FutureExt, StreamExt as _, stream::FuturesUnordered};
 use iprobe::{ipv4, ipv6};
 use mdns_proto::{
   error::{BufferType, ProtoError},
-  proto::{Label, Message, Question, ResourceRecord},
+  proto::{Message, Question, ResourceRecord},
   server::SlabEndpoint,
 };
 use smallvec_wrapper::SmallVec;
@@ -327,7 +327,6 @@ where
             class=%question.class(),
             type=?question.ty(),
             name=%question.name(),
-            eq=(Label::from("_foobar._tcp") == question.name()),
             "mdns server: handling question",
           );
           let mut answers = match zone.answers(question.name(), question.ty()).await {
@@ -374,8 +373,6 @@ where
               continue;
             }
           };
-          tracing::trace!(from=%addr, answers=?answers, "mdns server: sending response message");
-
           tracing::trace!(from=%addr, data=?&buf[..len], "mdns server: sending response message");
           if let Err(e) = conn.send_to(&buf[..len], addr).await {
             tracing::error!(from=%addr, err=%e, "mdns server: fail to send response message");

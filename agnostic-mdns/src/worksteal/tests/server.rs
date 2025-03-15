@@ -6,13 +6,10 @@ use futures::StreamExt;
 use mdns_proto::proto::Label;
 
 use crate::{
-  ServerOptions,
+  QueryParam, ServerOptions,
   service::Service,
   tests::{make_service, make_service_with_service_name},
-  worksteal::{
-    Server,
-    client::{QueryParam, query_with},
-  },
+  worksteal::{Server, client::query_with},
 };
 
 macro_rules! test_suites {
@@ -42,14 +39,13 @@ async fn server_start_stop<N: Net>() {
   assert_eq!(s.domain().as_str(), "local.");
   assert_eq!(
     s.ipv4s(),
-    &["192.168.0.42".parse::<Ipv4Addr>().unwrap().into(),]
+    &["192.168.0.42".parse::<Ipv4Addr>().unwrap(),]
   );
   assert_eq!(
     s.ipv6s(),
     &["2620:0:1000:1900:b0c2:d0b2:c411:18bc"
       .parse::<Ipv6Addr>()
-      .unwrap()
-      .into(),]
+      .unwrap(),]
   );
   assert_eq!(s.port(), 80);
   assert_eq!(s.txt_records(), &["Local web server"]);
@@ -83,8 +79,8 @@ async fn server_lookup<N: Net>() {
         match res {
           Ok(ent) => {
             tracing::info!("Found service: {:?}", ent);
-            assert_eq!(ent.name().as_str(), "hostname._foobar._tcp.local.");
-            assert_eq!(ent.host().as_str(), "testhost.");
+            assert_eq!(ent.name().as_str(), "hostname._foobar._tcp.local");
+            assert_eq!(ent.host().as_str(), "testhost");
             assert_eq!(ent.port(), 80);
             assert_eq!(
               ent.ipv4_addr().unwrap(),

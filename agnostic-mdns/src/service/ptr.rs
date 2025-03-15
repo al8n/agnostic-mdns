@@ -1,8 +1,6 @@
-use mdns_proto::proto::{Label, Serialize};
+use mdns_proto::{error::ProtoError, proto::{Label, Serialize}};
 use smol_str::SmolStr;
 use triomphe::Arc;
-
-use crate::ProtoError;
 
 /// ```text
 /// 3.3.12. PTR RDATA format
@@ -23,6 +21,7 @@ use crate::ProtoError;
 /// description of the IN-ADDR.ARPA domain for an example.
 /// ```
 #[derive(Clone, PartialEq, Eq, Hash)]
+#[allow(clippy::upper_case_acronyms)]
 pub struct PTR {
   data: Arc<[u8]>,
   name: SmolStr,
@@ -30,9 +29,7 @@ pub struct PTR {
 
 impl core::fmt::Debug for PTR {
   fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-    f.debug_tuple("PTR")
-      .field(&self.name)
-      .finish()
+    f.debug_tuple("PTR").field(&self.name).finish()
   }
 }
 
@@ -52,7 +49,6 @@ impl PTR {
           name,
         }
       })
-      .map_err(|_| ProtoError::NameTooLong)
   }
 
   /// Returns the encoded bytes of the name.

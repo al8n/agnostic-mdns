@@ -2,26 +2,26 @@ use core::{error::Error, net::IpAddr};
 
 use std::{
   io,
-  net::ToSocketAddrs,
+  net::{ToSocketAddrs, Ipv4Addr, Ipv6Addr},
   sync::atomic::{AtomicU32, Ordering},
+  str::FromStr,
 };
 
 use super::{
-  invalid_input_err, is_fqdn,
-  types::{A, AAAA, Name, PTR, RecordDataRef, RecordRef, SRV, TXT},
+  invalid_input_err, is_fqdn, IPV4_SIZE, IPV6_SIZE,
 };
 
-use either::Either;
 use mdns_proto::proto::{Label, ResourceRecord, ResourceType};
 use smallvec_wrapper::{SmallVec, TinyVec};
-use smol_str::{SmolStr, format_smolstr};
+use smol_str::{SmolStr, ToSmolStr, format_smolstr};
 use triomphe::Arc;
 
 const DEFAULT_TTL: u32 = 120;
+const DNS_CLASS_IN: u16 = 1;
 
 /// The error of the service
 #[derive(Debug, thiserror::Error)]
-pub enum ServiceError {
+enum ServiceError {
   /// Service port is missing
   #[error("missing service port")]
   PortNotFound,
@@ -37,26 +37,161 @@ pub enum ServiceError {
   /// Not a fully qualified domain name
   #[error("{0} is not a fully qualified domain name")]
   NotFQDN(SmolStr),
+  /// The TXT data is too long
+  #[error("TXT record is too long")]
+  TxtDataTooLong,
 }
 
+use ptr::PTR;
+use srv::SRV;
+use txt::TXT;
+
+mod ptr;
+mod srv;
+mod txt;
+
+/// ```text
+/// -- RFC 1035 -- Domain Implementation and Specification    November 1987
+///
+/// 3.4. Internet specific RRs
+///
+/// 3.4.1. A RDATA format
+///
+///     +--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+
+///     |                    ADDRESS                    |
+///     +--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+
+///
+/// where:
+///
+/// ADDRESS         A 32 bit Internet address.
+///
+/// Hosts that have multiple Internet addresses will have multiple A
+/// records.
+///
+/// A records cause no additional section processing.  The RDATA section of
+/// an A line in a Zone File is an Internet address expressed as four
+/// decimal numbers separated by dots without any embedded spaces (e.g.,
+/// "10.2.data.52" or "192.data.5.6").
+/// ```
+#[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
+struct A([u8; IPV4_SIZE]);
+
+impl FromStr for A {
+  type Err = <Ipv4Addr as FromStr>::Err;
+
+  fn from_str(s: &str) -> Result<Self, Self::Err> {
+    s.parse::<Ipv4Addr>().map(Into::into)
+  }
+}
+
+impl A {
+  /// Creates a new `A` record data.
+  #[inline]
+  pub const fn new(addr: Ipv4Addr) -> Self {
+    Self(addr.octets())
+  }
+
+  /// Returns the IPv4 address of the `A` record data.
+  #[inline]
+  pub const fn addr(&self) -> Ipv4Addr {
+    Ipv4Addr::new(self.0[0], self.0[1], self.0[2], self.0[3])
+  }
+
+  /// Returns the bytes format of the `A` record data.
+  #[inline]
+  pub const fn data(&self) -> &[u8] {
+    &self.0
+  }
+}
+
+impl From<Ipv4Addr> for A {
+  #[inline]
+  fn from(value: Ipv4Addr) -> Self {
+    Self::new(value)
+  }
+}
+
+impl From<A> for Ipv4Addr {
+  #[inline]
+  fn from(value: A) -> Self {
+    value.addr()
+  }
+}
+
+/// ```text
+/// -- RFC 1886 -- IPv6 DNS Extensions              December 1995
+///
+/// 2.2 AAAA data format
+///
+///    A 128 bit IPv6 address is encoded in the data portion of an AAAA
+///    resource record in network byte order (high-order byte first).
+/// ```
+#[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
+#[allow(clippy::upper_case_acronyms)]
+struct AAAA([u8; IPV6_SIZE]);
+
+impl FromStr for AAAA {
+  type Err = <Ipv6Addr as FromStr>::Err;
+
+  fn from_str(s: &str) -> Result<Self, Self::Err> {
+    s.parse::<Ipv6Addr>().map(Into::into)
+  }
+}
+
+impl AAAA {
+  /// Creates a new `AAAA` record data.
+  #[inline]
+  pub const fn new(addr: Ipv6Addr) -> Self {
+    Self(addr.octets())
+  }
+
+  /// Returns the IPv6 address of the `AAAA` record data.
+  #[inline]
+  pub fn addr(&self) -> Ipv6Addr {
+    Ipv6Addr::from(self.0)
+  }
+
+  /// Returns the bytes format of the `AAAA` record data.
+  #[inline]
+  pub const fn data(&self) -> &[u8] {
+    &self.0
+  }
+}
+
+impl From<Ipv6Addr> for AAAA {
+  #[inline]
+  fn from(value: Ipv6Addr) -> Self {
+    Self::new(value)
+  }
+}
+
+impl From<AAAA> for Ipv6Addr {
+  #[inline]
+  fn from(value: AAAA) -> Self {
+    value.addr()
+  }
+}
+
+
+
 /// A builder for creating a new [`Service`].
-pub struct ServiceBuilder {
-  instance: SmolStr,
-  service: SmolStr,
-  domain: Option<SmolStr>,
-  hostname: Option<SmolStr>,
+pub struct ServiceBuilder<'a> {
+  instance: Label<'a>,
+  service: Label<'a>,
+  domain: Option<Label<'a>>,
+  hostname: Option<Label<'a>>,
   port: Option<u16>,
-  ipv4s: TinyVec<A>,
-  ipv6s: TinyVec<AAAA>,
+  ipv4s: TinyVec<Ipv4Addr>,
+  ipv6s: TinyVec<Ipv6Addr>,
   txt: TinyVec<SmolStr>,
   ttl: u32,
   srv_priority: u16,
   srv_weight: u16,
 }
 
-impl ServiceBuilder {
+impl<'a> ServiceBuilder<'a> {
   /// Returns a new ServiceBuilder with default values.
-  pub fn new(instance: SmolStr, service: SmolStr) -> Self {
+  pub fn new(instance: Label<'a>, service: Label<'a>) -> Self {
     Self {
       instance,
       service,
@@ -82,7 +217,7 @@ impl ServiceBuilder {
   /// let builder = ServiceBuilder::new("hostname".into(), "_http._tcp".into());
   /// assert_eq!(builder.instance().as_str(), "hostname");
   /// ```
-  pub fn instance(&self) -> &SmolStr {
+  pub fn instance(&self) -> &Label<'a> {
     &self.instance
   }
 
@@ -96,7 +231,7 @@ impl ServiceBuilder {
   /// let builder = ServiceBuilder::new("hostname".into(), "_http._tcp".into());
   /// assert_eq!(builder.service().as_str(), "_http._tcp");
   /// ```
-  pub fn service(&self) -> &SmolStr {
+  pub fn service(&self) -> &Label<'a> {
     &self.service
   }
 
@@ -111,7 +246,7 @@ impl ServiceBuilder {
   ///
   /// assert!(builder.domain().is_none());
   /// ```
-  pub fn domain(&self) -> Option<&SmolStr> {
+  pub fn domain(&self) -> Option<&Label<'a>> {
     self.domain.as_ref()
   }
 
@@ -127,7 +262,7 @@ impl ServiceBuilder {
   ///
   /// assert_eq!(builder.domain().unwrap().as_str(), "local.");
   /// ```
-  pub fn with_domain(mut self, domain: SmolStr) -> Self {
+  pub fn with_domain(mut self, domain: Label<'a>) -> Self {
     self.domain = Some(domain);
     self
   }
@@ -144,7 +279,7 @@ impl ServiceBuilder {
   ///
   /// assert_eq!(builder.hostname().unwrap().as_str(), "testhost.");
   /// ```
-  pub fn hostname(&self) -> Option<&SmolStr> {
+  pub fn hostname(&self) -> Option<&Label<'a>> {
     self.hostname.as_ref()
   }
 
@@ -158,7 +293,7 @@ impl ServiceBuilder {
   /// let builder = ServiceBuilder::new("hostname".into(), "_http._tcp".into())
   ///   .with_hostname("testhost.".into());
   /// ```
-  pub fn with_hostname(mut self, hostname: SmolStr) -> Self {
+  pub fn with_hostname(mut self, hostname: Label<'a>) -> Self {
     self.hostname = Some(hostname);
     self
   }
@@ -315,7 +450,7 @@ impl ServiceBuilder {
   ///
   /// assert_eq!(builder.ipv4s(), &["192.168.0.1".parse().unwrap()]);
   /// ```
-  pub fn ipv4s(&self) -> &[A] {
+  pub fn ipv4s(&self) -> &[Ipv4Addr] {
     &self.ipv4s
   }
 
@@ -334,7 +469,7 @@ impl ServiceBuilder {
   ///
   /// assert_eq!(builder.ipv6s(), &["::1".parse().unwrap()]);
   /// ```
-  pub fn ipv6s(&self) -> &[AAAA] {
+  pub fn ipv6s(&self) -> &[Ipv6Addr] {
     &self.ipv6s
   }
 
@@ -343,12 +478,12 @@ impl ServiceBuilder {
   /// ## Example
   ///
   /// ```rust
-  /// use agnostic_mdns::{A, ServiceBuilder};
+  /// use agnostic_mdns::ServiceBuilder;
   ///
   /// let builder = ServiceBuilder::new("hostname".into(), "_http._tcp".into())
   ///   .with_ipv4s(["192.168.0.1".parse().unwrap()].into_iter().collect());
   /// ```
-  pub fn with_ipv4s(mut self, ips: TinyVec<A>) -> Self {
+  pub fn with_ipv4s(mut self, ips: TinyVec<Ipv4Addr>) -> Self {
     self.ipv4s = ips;
     self
   }
@@ -363,7 +498,7 @@ impl ServiceBuilder {
   /// let builder = ServiceBuilder::new("hostname".into(), "_http._tcp".into())
   ///   .with_ipv6s(["::1".parse().unwrap()].into_iter().collect());
   /// ```
-  pub fn with_ipv6s(mut self, ips: TinyVec<AAAA>) -> Self {
+  pub fn with_ipv6s(mut self, ips: TinyVec<Ipv6Addr>) -> Self {
     self.ipv6s = ips;
     self
   }
@@ -381,8 +516,8 @@ impl ServiceBuilder {
   /// ```
   pub fn with_ip(mut self, ip: IpAddr) -> Self {
     match ip {
-      IpAddr::V4(ip) => self.ipv4s.push(ip.into()),
-      IpAddr::V6(ip) => self.ipv6s.push(ip.into()),
+      IpAddr::V4(ip) => self.ipv4s.push(ip),
+      IpAddr::V6(ip) => self.ipv6s.push(ip),
     }
     self
   }
@@ -442,15 +577,17 @@ impl ServiceBuilder {
   // names, and, if required, select a new name.  There may also be conflicting
   // hostName A/AAAA records.
   pub fn finalize(self) -> io::Result<Service> {
-    let domain = match self.domain {
+    let domain = self.domain.as_ref().map(|d| format_smolstr!("{}.", d));
+    let domain = match domain {
       Some(domain) if !is_fqdn(domain.as_str()) => {
         return Err(invalid_input_err(ServiceError::NotFQDN(domain)));
       }
       Some(domain) => domain,
-      None => Name::local_fqdn(),
+      None => "local".into(),
     };
 
-    let hostname = match self.hostname {
+    let hostname = self.hostname.as_ref().map(|h| format_smolstr!("{}.", h));
+    let hostname = match hostname {
       Some(hostname) if !hostname.is_empty() => {
         if !is_fqdn(hostname.as_str()) {
           return Err(invalid_input_err(ServiceError::NotFQDN(hostname)));
@@ -466,7 +603,7 @@ impl ServiceBuilder {
     };
 
     let (ipv4s, ipv6s) = if self.ipv4s.is_empty() && self.ipv6s.is_empty() {
-      let tmp_hostname = Name::append(hostname.as_str(), domain.as_str());
+      let tmp_hostname = format_smolstr!("{}.{}", hostname, domain);
 
       let mut ipv4s = TinyVec::new();
       let mut ipv6s = TinyVec::new();
@@ -480,8 +617,8 @@ impl ServiceBuilder {
           })
         })?
         .for_each(|addr| match addr.ip() {
-          IpAddr::V4(ip) => ipv4s.push(ip.into()),
-          IpAddr::V6(ip) => ipv6s.push(ip.into()),
+          IpAddr::V4(ip) => ipv4s.push(ip),
+          IpAddr::V6(ip) => ipv6s.push(ip),
         });
 
       (ipv4s, ipv6s)
@@ -489,38 +626,22 @@ impl ServiceBuilder {
       (self.ipv4s, self.ipv6s)
     };
 
-    let service_addr = format_smolstr!(
-      "{}.{}.",
-      self.service.as_str().trim_matches('.'),
-      domain.as_str().trim_matches('.')
-    );
-    let instance_addr = format_smolstr!(
-      "{}.{}.{}.",
-      self.instance.as_str().trim_matches('.'),
-      self.service.as_str().trim_matches('.'),
-      domain.as_str().trim_matches('.')
-    );
-    let enum_addr = format_smolstr!(
-      "_services._dns-sd._udp.{}.",
-      domain.as_str().trim_matches('.')
-    );
+    let service_addr = format_smolstr!("{}.{}.", self.service, domain.as_str().trim_matches('.'));
+    let instance_addr = format_smolstr!("{}.{}.{}.", self.instance, self.service, domain);
+    let enum_addr = format_smolstr!("_services._dns-sd._udp.{}.", domain);
 
     let srv = SRV::new(self.srv_priority, self.srv_weight, port, hostname.clone())
       .map_err(invalid_input_err)?;
 
     Ok(Service {
-      instance: self.instance,
-      service: self.service,
+      instance: self.instance.to_smolstr(),
+      service: self.service.to_smolstr(),
       domain,
       hostname,
-      ipv4s: match ipv4s.into_inner() {
-        Either::Left(ips) => Arc::from_iter(ips),
-        Either::Right(ips) => Arc::from(ips),
-      },
-      ipv6s: match ipv6s.into_inner() {
-        Either::Left(ips) => Arc::from_iter(ips),
-        Either::Right(ips) => Arc::from(ips),
-      },
+      ipv4s: ipv4s.iter().map(|ip| A::from(*ip)).collect(),
+      ipv6s: ipv6s.iter().map(|ip| AAAA::from(*ip)).collect(),
+      ipv4s_origin: ipv4s,
+      ipv6s_origin: ipv6s,
       txt: TXT::new(Arc::from_iter(self.txt)).map_err(invalid_input_err)?,
       service_addr: PTR::new(service_addr).map_err(invalid_input_err)?,
       instance_addr: PTR::new(instance_addr).map_err(invalid_input_err)?,
@@ -543,8 +664,12 @@ pub struct Service {
   /// Host machine DNS name (e.g. "mymachine.net")
   hostname: SmolStr,
   /// IP addresses for the service's host
-  ipv4s: Arc<[A]>,
-  ipv6s: Arc<[AAAA]>,
+  ipv4s_origin: TinyVec<Ipv4Addr>,
+  ipv6s_origin: TinyVec<Ipv6Addr>,
+
+  // TODO(al8n): remove the following two fields, when Ipv*Addr::as_octets is stabilized
+  ipv4s: TinyVec<A>,
+  ipv6s: TinyVec<AAAA>,
 
   /// Service TXT records
   txt: TXT,
@@ -589,34 +714,22 @@ impl Service {
     self.srv.port()
   }
 
-  /// Sets the port of the mdns service.
-  #[inline]
-  pub fn set_port(&self, port: u16) {
-    self.srv.set_port(port);
-  }
-
   /// Returns the TTL of the mdns service.
   #[inline]
   pub fn ttl(&self) -> u32 {
     self.ttl.load(Ordering::Acquire)
   }
 
-  /// Sets the TTL of the mdns service.
-  #[inline]
-  pub fn set_ttl(&self, ttl: u32) {
-    self.ttl.store(ttl, Ordering::Release);
-  }
-
   /// Returns the IPv4 addresses of the mdns service.
   #[inline]
-  pub fn ipv4s(&self) -> &[A] {
-    &self.ipv4s
+  pub fn ipv4s(&self) -> &[Ipv4Addr] {
+    &self.ipv4s_origin
   }
 
   /// Returns the IPv6 addresses of the mdns service.
   #[inline]
-  pub fn ipv6s(&self) -> &[AAAA] {
-    &self.ipv6s
+  pub fn ipv6s(&self) -> &[Ipv6Addr] {
+    &self.ipv6s_origin
   }
 
   /// Returns the TXT records of the mdns service.
@@ -644,9 +757,8 @@ impl Service {
         self.instance_records(qn, rt)
       }
       _ => {
-        tracing::debug!("No answers for {:?}", qn);
         core::iter::empty()
-      },
+      }
     }
   }
 
@@ -657,9 +769,7 @@ impl Service {
     rt: ResourceType,
   ) -> impl Iterator<Item = ResourceRecord<'a>> {
     match rt {
-      ResourceType::Wildcard | ResourceType::Ptr => core::iter::once(ResourceRecord::from(
-        &RecordRef::from_rdata(name, self.ttl(), RecordDataRef::PTR(&self.service_addr)),
-      )),
+      ResourceType::Wildcard | ResourceType::Ptr => core::iter::once(ResourceRecord::new(name, ResourceType::Ptr, DNS_CLASS_IN, self.ttl(), self.service_addr.data())),
       _ => core::iter::empty(),
     }
   }
@@ -672,11 +782,8 @@ impl Service {
   ) -> impl Iterator<Item = ResourceRecord<'a>> {
     match rt {
       ResourceType::Wildcard | ResourceType::Ptr => {
-        // Build a PTR response for the service
-        let rr = RecordRef::from_rdata(name, self.ttl(), RecordDataRef::PTR(&self.instance_addr));
-
         // Get the instance records
-        core::iter::once(ResourceRecord::from(&rr))
+        core::iter::once(ResourceRecord::new(name, ResourceType::Ptr, DNS_CLASS_IN, self.ttl(), self.instance_addr.data()))
           .chain(self.instance_records(self.instance_addr.name().into(), ResourceType::Wildcard))
       }
       _ => core::iter::empty(),
@@ -701,24 +808,14 @@ impl Service {
           .into_iter()
       }
       ResourceType::A => self.ipv4s.iter().map(move |ip| {
-        ResourceRecord::from(&RecordRef::from_rdata(
-          name,
-          self.ttl(),
-          RecordDataRef::A(ip),
-        ))
+        ResourceRecord::new(name, ResourceType::A, DNS_CLASS_IN, self.ttl(), ip.data())
       }),
       ResourceType::AAAA => self.ipv6s.iter().map(move |ip| {
-        ResourceRecord::from(&RecordRef::from_rdata(
-          name,
-          self.ttl(),
-          RecordDataRef::AAAA(ip),
-        ))
+        ResourceRecord::new(name, ResourceType::AAAA, DNS_CLASS_IN, self.ttl(), ip.data())
       }),
       ResourceType::Srv => {
         // Create the SRV Record
-        let rr = RecordRef::from_rdata(name, self.ttl(), RecordDataRef::SRV(&self.srv));
-
-        let recs = core::iter::once(ResourceRecord::from(&rr));
+        let recs = core::iter::once(ResourceRecord::new(name, ResourceType::Srv, DNS_CLASS_IN, self.ttl(), self.srv.data()));
         recs
           // Add the A record
           .chain(self.instance_records(self.instance_addr.name().into(), ResourceType::A))
@@ -729,8 +826,7 @@ impl Service {
       }
       ResourceType::Txt => {
         // Build a TXT response for the instance
-        let rr = RecordRef::from_rdata(name, self.ttl(), RecordDataRef::TXT(&self.txt));
-        core::iter::once(ResourceRecord::from(&rr))
+        core::iter::once(ResourceRecord::new(name, ResourceType::Txt, DNS_CLASS_IN, self.ttl(), self.txt.data()))
       }
       _ => core::iter::empty(),
     }

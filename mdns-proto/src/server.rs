@@ -219,12 +219,12 @@ where
 
   /// Close the endpoint
   pub fn close(&mut self) {
-    self.connections.iter().for_each(|(idx, conn)| {
+    self.connections.iter().for_each(|(_idx, conn)| {
       if !conn.is_empty() {
         #[cfg(feature = "tracing")]
         tracing::warn!(
           "mdns endpoint: connection {} closed with {} remaining queries",
-          idx,
+          _idx,
           conn.len()
         );
       }
