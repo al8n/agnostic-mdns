@@ -1,195 +1,216 @@
-// use core::{
-//   net::{Ipv4Addr, Ipv6Addr},
-//   panic,
-// };
+use core::{
+  net::{Ipv4Addr, Ipv6Addr},
+  panic,
+};
 
-// use dns_protocol::ResourceType;
+use mdns_proto::{
+  Txt,
+  proto::{Cursor, Deserialize, Label, ResourceType},
+};
 
-// use crate::{A, AAAA, Zone, tests::make_service, types::RecordDataRef};
+use crate::{tests::make_service, worksteal::Zone};
 
-// use super::*;
+macro_rules! test_suites {
+  ($runtime:ident {
+    $($name:ident),+$(,)?
+  }) => {
+    $(
+      paste::paste! {
+        #[test]
+        fn [< $runtime _ $name >]() {
+          $crate::worksteal::tests::[< $runtime _run >]($name());
+        }
+      }
+    )*
+  }
+}
 
-// macro_rules! test_suites {
-//   ($runtime:ident {
-//     $($name:ident),+$(,)?
-//   }) => {
-//     $(
-//       paste::paste! {
-//         #[test]
-//         fn [< $runtime _ $name >]() {
-//           $crate::tests::[< $runtime _run >]($name::<agnostic_net::runtime::[< $runtime >]::[< $runtime:camel Runtime>]>());
-//         }
-//       }
-//     )*
-//   }
-// }
+async fn bad_addr() {
+  let s = make_service();
 
-// async fn bad_addr<R: RuntimeLite>() {
-//   let s = make_service::<R>().await;
+  let recs = s
+    .answers("random".into(), ResourceType::Wildcard)
+    .await
+    .unwrap()
+    .collect::<Vec<_>>();
+  assert!(recs.is_empty(), "bad: {recs:?}");
+}
 
-//   let recs = s
-//     .records("random".into(), ResourceType::Wildcard)
-//     .await
-//     .unwrap();
-//   assert!(recs.is_empty(), "bad: {recs:?}");
-// }
+async fn service_addr() {
+  let s = make_service();
 
-// async fn service_addr<R: RuntimeLite>() {
-//   let s = make_service::<R>().await;
+  let recs = s
+    .answers("_http._tcp.local.".into(), ResourceType::Wildcard)
+    .await
+    .unwrap()
+    .collect::<Vec<_>>();
+  assert_eq!(recs.len(), 5, "bad: {recs:?}");
 
-//   let recs = s
-//     .records("_http._tcp.local.".into(), ResourceType::Wildcard)
-//     .await
-//     .unwrap();
-//   assert_eq!(recs.len(), 5, "bad: {recs:?}");
+  let ResourceType::Ptr = recs[0].ty() else {
+    panic!("bad: {recs:?}")
+  };
 
-//   let RecordDataRef::PTR(ptr) = recs[0].data() else {
-//     panic!("bad: {recs:?}")
-//   };
-//   assert_eq!(ptr.name(), "hostname._http._tcp.local.");
+  let mut label = Label::default();
+  label.deserialize(Cursor::new(recs[0].data())).unwrap();
+  assert_eq!(label, "hostname._http._tcp.local.".into());
 
-//   matches!(recs[1].data(), RecordDataRef::SRV(_));
-//   matches!(recs[2].data(), RecordDataRef::A(_));
-//   matches!(recs[3].data(), RecordDataRef::AAAA(_));
-//   matches!(recs[4].data(), RecordDataRef::TXT(_));
-// }
+  matches!(recs[1].ty(), ResourceType::Srv);
+  matches!(recs[2].ty(), ResourceType::A);
+  matches!(recs[3].ty(), ResourceType::AAAA);
+  matches!(recs[4].ty(), ResourceType::Txt);
+}
 
-// async fn instance_addr_any<R: RuntimeLite>() {
-//   let s = make_service::<R>().await;
+async fn instance_addr_any() {
+  let s = make_service();
 
-//   let recs = s
-//     .records("hostname._http._tcp.local.".into(), ResourceType::Wildcard)
-//     .await
-//     .unwrap();
-//   assert_eq!(recs.len(), 4, "bad: {recs:?}");
+  let recs = s
+    .answers("hostname._http._tcp.local.".into(), ResourceType::Wildcard)
+    .await
+    .unwrap()
+    .collect::<Vec<_>>();
+  assert_eq!(recs.len(), 4, "bad: {recs:?}");
 
-//   matches!(recs[0].data(), RecordDataRef::SRV(_));
-//   matches!(recs[1].data(), RecordDataRef::A(_));
-//   matches!(recs[2].data(), RecordDataRef::AAAA(_));
-//   matches!(recs[3].data(), RecordDataRef::TXT(_));
-// }
+  matches!(recs[0].ty(), ResourceType::Srv);
+  matches!(recs[1].ty(), ResourceType::A);
+  matches!(recs[2].ty(), ResourceType::AAAA);
+  matches!(recs[3].ty(), ResourceType::Txt);
+}
 
-// async fn instance_addr_srv<R: RuntimeLite>() {
-//   let s = make_service::<R>().await;
+async fn instance_addr_srv() {
+  let s = make_service();
 
-//   let recs = s
-//     .records("hostname._http._tcp.local.".into(), ResourceType::Srv)
-//     .await
-//     .unwrap();
-//   assert_eq!(recs.len(), 3, "bad: {recs:?}");
+  let recs = s
+    .answers("hostname._http._tcp.local.".into(), ResourceType::Srv)
+    .await
+    .unwrap()
+    .collect::<Vec<_>>();
+  assert_eq!(recs.len(), 3, "bad: {recs:?}");
 
-//   let RecordDataRef::SRV(srv) = recs[0].data() else {
-//     panic!("bad: {recs:?}")
-//   };
+  let ResourceType::Srv = recs[0].ty() else {
+    panic!("bad: {recs:?}")
+  };
 
-//   matches!(recs[1].data(), RecordDataRef::A(_));
-//   matches!(recs[2].data(), RecordDataRef::AAAA(_));
+  matches!(recs[1].ty(), ResourceType::A);
+  matches!(recs[2].ty(), ResourceType::AAAA);
 
-//   assert_eq!(srv.port(), s.port());
-// }
+  assert_eq!(&recs[0].data()[4..6], s.port().to_be_bytes());
+}
 
-// async fn instance_addr_a<R: RuntimeLite>() {
-//   let s = make_service::<R>().await;
+async fn instance_addr_a() {
+  let s = make_service();
 
-//   let recs = s
-//     .records("hostname._http._tcp.local.".into(), ResourceType::A)
-//     .await
-//     .unwrap();
-//   assert_eq!(recs.len(), 1, "bad: {recs:?}");
+  let recs = s
+    .answers("hostname._http._tcp.local.".into(), ResourceType::A)
+    .await
+    .unwrap()
+    .collect::<Vec<_>>();
+  assert_eq!(recs.len(), 1, "bad: {recs:?}");
 
-//   let RecordDataRef::A(a) = recs[0].data() else {
-//     panic!("bad: {recs:?}")
-//   };
+  let ResourceType::A = recs[0].ty() else {
+    panic!("bad: {recs:?}")
+  };
 
-//   assert_eq!(**a, A::from("192.168.0.42".parse::<Ipv4Addr>().unwrap()));
-// }
+  assert_eq!(
+    recs[0].data(),
+    "192.168.0.42".parse::<Ipv4Addr>().unwrap().octets()
+  );
+}
 
-// async fn instance_addr_aaaa<R: RuntimeLite>() {
-//   let s = make_service::<R>().await;
+async fn instance_addr_aaaa() {
+  let s = make_service();
 
-//   let recs = s
-//     .records("hostname._http._tcp.local.".into(), ResourceType::AAAA)
-//     .await
-//     .unwrap();
-//   assert_eq!(recs.len(), 1, "bad: {recs:?}");
+  let recs = s
+    .answers("hostname._http._tcp.local.".into(), ResourceType::AAAA)
+    .await
+    .unwrap()
+    .collect::<Vec<_>>();
+  assert_eq!(recs.len(), 1, "bad: {recs:?}");
 
-//   let RecordDataRef::AAAA(aaaa) = recs[0].data() else {
-//     panic!("bad: {recs:?}")
-//   };
+  let ResourceType::AAAA = recs[0].ty() else {
+    panic!("bad: {recs:?}")
+  };
 
-//   assert_eq!(
-//     **aaaa,
-//     AAAA::from(
-//       "2620:0:1000:1900:b0c2:d0b2:c411:18bc"
-//         .parse::<Ipv6Addr>()
-//         .unwrap()
-//     )
-//   );
-// }
+  assert_eq!(
+    recs[0].data(),
+    "2620:0:1000:1900:b0c2:d0b2:c411:18bc"
+      .parse::<Ipv6Addr>()
+      .unwrap()
+      .octets()
+  );
+}
 
-// async fn instance_addr_txt<R: RuntimeLite>() {
-//   let s = make_service::<R>().await;
+async fn instance_addr_txt() {
+  let s = make_service();
 
-//   let recs = s
-//     .records("hostname._http._tcp.local.".into(), ResourceType::Txt)
-//     .await
-//     .unwrap();
-//   assert_eq!(recs.len(), 1, "bad: {recs:?}");
+  let recs = s
+    .answers("hostname._http._tcp.local.".into(), ResourceType::Txt)
+    .await
+    .unwrap()
+    .collect::<Vec<_>>();
+  assert_eq!(recs.len(), 1, "bad: {recs:?}");
 
-//   let RecordDataRef::TXT(txt) = recs[0].data() else {
-//     panic!("bad: {recs:?}")
-//   };
+  let ResourceType::Txt = recs[0].ty() else {
+    panic!("bad: {recs:?}")
+  };
 
-//   assert_eq!(txt.strings()[0].as_str(), s.txt_records()[0].as_str());
-// }
+  let txt = Txt::from_bytes(recs[0].data());
 
-// async fn service_enum_ptr<R: RuntimeLite>() {
-//   let s = make_service::<R>().await;
+  assert_eq!(
+    txt.strings().next().unwrap().unwrap().to_string(),
+    s.txt_records()[0].as_str()
+  );
+}
 
-//   let recs = s
-//     .records("_services._dns-sd._udp.local.".into(), ResourceType::Ptr)
-//     .await
-//     .unwrap();
-//   assert_eq!(recs.len(), 1, "bad: {recs:?}");
+async fn service_enum_ptr() {
+  let s = make_service();
 
-//   let RecordDataRef::PTR(ptr) = recs[0].data() else {
-//     panic!("bad: {recs:?}")
-//   };
-//   assert_eq!(ptr.name(), "_http._tcp.local.");
-// }
+  let recs = s
+    .answers("_services._dns-sd._udp.local.".into(), ResourceType::Ptr)
+    .await
+    .unwrap()
+    .collect::<Vec<_>>();
+  assert_eq!(recs.len(), 1, "bad: {recs:?}");
 
-// #[cfg(feature = "tokio")]
-// test_suites!(tokio {
-//   bad_addr,
-//   service_addr,
-//   instance_addr_any,
-//   instance_addr_srv,
-//   instance_addr_a,
-//   instance_addr_aaaa,
-//   instance_addr_txt,
-//   service_enum_ptr,
-// });
+  let ResourceType::Ptr = recs[0].ty() else {
+    panic!("bad: {recs:?}")
+  };
+  let mut label = Label::default();
+  label.deserialize(Cursor::new(recs[0].data())).unwrap();
+  assert_eq!(label, Label::from("_http._tcp.local."));
+}
 
-// #[cfg(feature = "smol")]
-// test_suites!(smol {
-//   bad_addr,
-//   service_addr,
-//   instance_addr_any,
-//   instance_addr_srv,
-//   instance_addr_a,
-//   instance_addr_aaaa,
-//   instance_addr_txt,
-//   service_enum_ptr,
-// });
+#[cfg(feature = "tokio")]
+test_suites!(tokio {
+  bad_addr,
+  service_addr,
+  instance_addr_any,
+  instance_addr_srv,
+  instance_addr_a,
+  instance_addr_aaaa,
+  instance_addr_txt,
+  service_enum_ptr,
+});
 
-// #[cfg(feature = "async-std")]
-// test_suites!(async_std {
-//   bad_addr,
-//   service_addr,
-//   instance_addr_any,
-//   instance_addr_srv,
-//   instance_addr_a,
-//   instance_addr_aaaa,
-//   instance_addr_txt,
-//   service_enum_ptr,
-// });
+#[cfg(feature = "smol")]
+test_suites!(smol {
+  bad_addr,
+  service_addr,
+  instance_addr_any,
+  instance_addr_srv,
+  instance_addr_a,
+  instance_addr_aaaa,
+  instance_addr_txt,
+  service_enum_ptr,
+});
+
+#[cfg(feature = "async-std")]
+test_suites!(async_std {
+  bad_addr,
+  service_addr,
+  instance_addr_any,
+  instance_addr_srv,
+  instance_addr_a,
+  instance_addr_aaaa,
+  instance_addr_txt,
+  service_enum_ptr,
+});

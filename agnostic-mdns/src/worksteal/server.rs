@@ -28,7 +28,7 @@ use super::Zone;
 pub struct Server<N, Z>
 where
   N: Net,
-  Z: Zone<N::Runtime>,
+  Z: Zone,
 {
   zone: Arc<Z>,
   opts: ServerOptions,
@@ -42,7 +42,7 @@ where
 impl<N, Z> Drop for Server<N, Z>
 where
   N: Net,
-  Z: Zone<N::Runtime>,
+  Z: Zone,
 {
   fn drop(&mut self) {
     self.shutdown_tx.close();
@@ -52,7 +52,7 @@ where
 impl<N, Z> Server<N, Z>
 where
   N: Net,
-  Z: Zone<N::Runtime>,
+  Z: Zone,
 {
   /// Creates a new mDNS server.
   pub async fn new(zone: Z, opts: ServerOptions) -> io::Result<Self> {
@@ -156,7 +156,7 @@ where
 struct Processor<N, Z>
 where
   N: Net,
-  Z: Zone<N::Runtime>,
+  Z: Zone,
 {
   zone: Arc<Z>,
   conn: N::UdpSocket,
@@ -172,7 +172,7 @@ where
 impl<N, Z> Processor<N, Z>
 where
   N: Net,
-  Z: Zone<N::Runtime>,
+  Z: Zone,
 {
   fn new(
     conn: N::UdpSocket,

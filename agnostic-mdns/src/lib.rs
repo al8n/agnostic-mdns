@@ -42,6 +42,7 @@ pub mod worksteal;
 pub mod service;
 
 pub use iprobe as netprobe;
+pub use service::{Service, ServiceBuilder};
 pub use smol_str::{SmolStr, format_smolstr};
 
 /// The options for [`Server`].
@@ -221,12 +222,12 @@ impl<'a> QueryParam<'a> {
   /// ## Example
   ///
   /// ```rust
-  /// use agnostic_mdns::{QueryParam, proto::Label};
+  /// use agnostic_mdns::{QueryParam, Label};
   ///
   /// let params = QueryParam::new("service._tcp".into())
   ///   .with_domain("local.".into());
   ///
-  /// assert_eq!(params.domain(), Label::from("local"));
+  /// assert_eq!(params.domain(), &Label::from("local"));
   pub const fn domain(&self) -> &Label<'a> {
     &self.domain
   }
@@ -251,12 +252,12 @@ impl<'a> QueryParam<'a> {
   /// ## Example
   ///
   /// ```rust
-  /// use agnostic_mdns::QueryParam;
+  /// use agnostic_mdns::{QueryParam, Label};
   ///
   /// let params = QueryParam::new("service._tcp".into())
   ///   .with_service("service._udp".into());
   ///
-  /// assert_eq!(params.service().as_str(), "service._udp");
+  /// assert_eq!(params.service(), &Label::from("service._udp"));
   pub const fn service(&self) -> &Label<'a> {
     &self.service
   }

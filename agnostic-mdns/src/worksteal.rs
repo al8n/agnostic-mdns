@@ -1,4 +1,3 @@
-use agnostic_net::runtime::RuntimeLite;
 use mdns_proto::proto::{Label, ResourceRecord, ResourceType};
 
 pub use agnostic_net as net;
@@ -13,7 +12,7 @@ mod tests;
 
 /// The interface used to integrate with the server and
 /// to serve records dynamically
-pub trait Zone<R>: core::fmt::Debug + Send + Sync + 'static {
+pub trait Zone: core::fmt::Debug + Send + Sync + 'static {
   /// The error type of the zone
   type Error: core::error::Error + Send + Sync + 'static;
 
@@ -22,34 +21,24 @@ pub trait Zone<R>: core::fmt::Debug + Send + Sync + 'static {
     &'a self,
     name: Label<'a>,
     rt: ResourceType,
-  ) -> impl Future<Output = Result<impl Iterator<Item = ResourceRecord<'a>> + 'a, Self::Error>> + Send + 'a
-  where
-    R: RuntimeLite;
+  ) -> impl Future<Output = Result<impl Iterator<Item = ResourceRecord<'a>> + 'a, Self::Error>> + Send + 'a;
 
   /// Returns the additional records for a DNS question.
   fn additionals<'a>(
     &'a self,
     name: Label<'a>,
     rt: ResourceType,
-  ) -> impl Future<Output = Result<impl Iterator<Item = ResourceRecord<'a>> + 'a, Self::Error>> + Send + 'a
-  where
-    R: RuntimeLite;
+  ) -> impl Future<Output = Result<impl Iterator<Item = ResourceRecord<'a>> + 'a, Self::Error>> + Send + 'a;
 }
 
-impl<R> Zone<R> for super::service::Service
-where
-  R: RuntimeLite,
-{
+impl Zone for super::service::Service {
   type Error = core::convert::Infallible;
 
   async fn answers<'a>(
     &'a self,
     name: Label<'a>,
     rt: ResourceType,
-  ) -> Result<impl Iterator<Item = ResourceRecord<'a>> + 'a, Self::Error>
-  where
-    R: RuntimeLite,
-  {
+  ) -> Result<impl Iterator<Item = ResourceRecord<'a>> + 'a, Self::Error> {
     Ok(self.fetch_answers(name, rt))
   }
 
@@ -57,10 +46,7 @@ where
     &'a self,
     _: Label<'a>,
     _: ResourceType,
-  ) -> Result<impl Iterator<Item = ResourceRecord<'a>> + 'a, Self::Error>
-  where
-    R: RuntimeLite,
-  {
+  ) -> Result<impl Iterator<Item = ResourceRecord<'a>> + 'a, Self::Error> {
     Ok(core::iter::empty())
   }
 }

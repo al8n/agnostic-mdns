@@ -208,10 +208,10 @@ impl<'a> ServiceBuilder<'a> {
   /// ## Example
   ///
   /// ```rust
-  /// use agnostic_mdns::ServiceBuilder;
+  /// use agnostic_mdns::{ServiceBuilder, Label};
   ///
   /// let builder = ServiceBuilder::new("hostname".into(), "_http._tcp".into());
-  /// assert_eq!(builder.instance().as_str(), "hostname");
+  /// assert_eq!(builder.instance(), &Label::from("hostname"));
   /// ```
   pub fn instance(&self) -> &Label<'a> {
     &self.instance
@@ -222,10 +222,10 @@ impl<'a> ServiceBuilder<'a> {
   /// ## Example
   ///
   /// ```rust
-  /// use agnostic_mdns::ServiceBuilder;
+  /// use agnostic_mdns::{ServiceBuilder, Label};
   ///
   /// let builder = ServiceBuilder::new("hostname".into(), "_http._tcp".into());
-  /// assert_eq!(builder.service().as_str(), "_http._tcp");
+  /// assert_eq!(builder.service(), &Label::from("_http._tcp"));
   /// ```
   pub fn service(&self) -> &Label<'a> {
     &self.service
@@ -251,12 +251,12 @@ impl<'a> ServiceBuilder<'a> {
   /// ## Example
   ///
   /// ```rust
-  /// use agnostic_mdns::ServiceBuilder;
+  /// use agnostic_mdns::{ServiceBuilder, Label};
   ///
   /// let builder = ServiceBuilder::new("hostname".into(), "_http._tcp".into())
   ///   .with_domain("local.".into());
   ///
-  /// assert_eq!(builder.domain().unwrap().as_str(), "local.");
+  /// assert_eq!(builder.domain().unwrap(), &Label::from("local."));
   /// ```
   pub fn with_domain(mut self, domain: Label<'a>) -> Self {
     self.domain = Some(domain);
@@ -268,12 +268,12 @@ impl<'a> ServiceBuilder<'a> {
   /// ## Example
   ///
   /// ```rust
-  /// use agnostic_mdns::ServiceBuilder;
+  /// use agnostic_mdns::{ServiceBuilder, Label};
   ///
   /// let builder = ServiceBuilder::new("hostname".into(), "_http._tcp".into())
   ///   .with_hostname("testhost.".into());
   ///
-  /// assert_eq!(builder.hostname().unwrap().as_str(), "testhost.");
+  /// assert_eq!(builder.hostname().unwrap(), &Label::from("testhost."));
   /// ```
   pub fn hostname(&self) -> Option<&Label<'a>> {
     self.hostname.as_ref()
@@ -437,14 +437,14 @@ impl<'a> ServiceBuilder<'a> {
   ///
   /// ```rust
   /// use agnostic_mdns::ServiceBuilder;
-  /// use std::net::IpAddr;
+  /// use std::net::{IpAddr, Ipv4Addr};
   ///
   /// let builder = ServiceBuilder::new("hostname".into(), "_http._tcp".into());
   /// assert!(builder.ipv4s().is_empty());
   ///
-  /// let builder = builder.with_ip("192.168.0.1".parse().unwrap());
+  /// let builder = builder.with_ip("192.168.0.1".parse::<IpAddr>().unwrap());
   ///
-  /// assert_eq!(builder.ipv4s(), &["192.168.0.1".parse().unwrap()]);
+  /// assert_eq!(builder.ipv4s(), &["192.168.0.1".parse::<Ipv4Addr>().unwrap()]);
   /// ```
   pub fn ipv4s(&self) -> &[Ipv4Addr] {
     &self.ipv4s
@@ -456,14 +456,14 @@ impl<'a> ServiceBuilder<'a> {
   ///
   /// ```rust
   /// use agnostic_mdns::ServiceBuilder;
-  /// use std::net::IpAddr;
+  /// use std::net::{IpAddr, Ipv6Addr};
   ///
   /// let builder = ServiceBuilder::new("hostname".into(), "_http._tcp".into());
   /// assert!(builder.ipv6s().is_empty());
   ///
-  /// let builder = builder.with_ip("::1".parse().unwrap());
+  /// let builder = builder.with_ip("::1".parse::<IpAddr>().unwrap());
   ///
-  /// assert_eq!(builder.ipv6s(), &["::1".parse().unwrap()]);
+  /// assert_eq!(builder.ipv6s(), &["::1".parse::<Ipv6Addr>().unwrap()]);
   /// ```
   pub fn ipv6s(&self) -> &[Ipv6Addr] {
     &self.ipv6s
