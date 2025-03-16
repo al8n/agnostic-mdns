@@ -8,6 +8,7 @@ homepage = "https//github.com/al8n/agnostic-mdns"
 documentation = "https//docs.rs/agnostic-mdns"
 description = "Sans-I/O mDNS protocol implementation"
 readme = "README.md"
+rust-version = "1.81.0"
 
 
 [features]
