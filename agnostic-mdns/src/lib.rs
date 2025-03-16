@@ -181,7 +181,7 @@ impl ServerOptions {
   /// ## Example
   ///
   /// ```rust
-  /// use agnostic_mdns::QueryParam;
+  /// use agnostic_mdns::ServerOptions;
   ///
   /// let opts = ServerOptions::new().with_max_payload_size(1500);
   /// ```

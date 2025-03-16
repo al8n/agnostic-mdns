@@ -14,6 +14,7 @@ mod unix_impl {
   use rustix::net::{AddressFamily, SocketType, bind, ipproto, socket, sockopt};
   use std::net::UdpSocket;
 
+  #[allow(dead_code)]
   pub(crate) fn unicast_udp4_socket(ifi: Option<Ipv4Addr>) -> io::Result<UdpSocket> {
     let sock = socket(AddressFamily::INET, SocketType::DGRAM, Some(ipproto::UDP))?;
     let addr: SocketAddr = (Ipv4Addr::UNSPECIFIED, 0).into();
@@ -30,6 +31,7 @@ mod unix_impl {
     Ok(sock)
   }
 
+  #[allow(dead_code)]
   pub(crate) fn unicast_udp6_socket(ifi: Option<u32>) -> io::Result<UdpSocket> {
     let sock = socket(AddressFamily::INET6, SocketType::DGRAM, Some(ipproto::UDP))?;
     sockopt::set_ipv6_v6only(&sock, true)?;
@@ -101,6 +103,7 @@ mod windows_impl {
   use socket2::{Domain, Protocol, Socket, Type};
   use std::net::UdpSocket;
 
+  #[allow(dead_code)]
   pub(crate) fn unicast_udp4_socket(ifi: Option<Ipv4Addr>) -> io::Result<UdpSocket> {
     let sock = Socket::new(Domain::IPV4, Type::DGRAM, Some(Protocol::UDP))?;
     let addr: SocketAddr = (Ipv4Addr::UNSPECIFIED, 0).into();
@@ -117,6 +120,7 @@ mod windows_impl {
     Ok(sock)
   }
 
+  #[allow(dead_code)]
   pub(crate) fn unicast_udp6_socket(ifi: Option<u32>) -> io::Result<UdpSocket> {
     let sock = Socket::new(Domain::IPV6, Type::DGRAM, Some(Protocol::UDP))?;
     sock.set_only_v6(true)?;
