@@ -134,7 +134,7 @@ jobs:
         path: ~/.cargo
         key: ${{ runner.os }}-coverage-dotcargo
     - name: Run build
-      run: cargo hack build --features-powerset
+      run: cargo hack build --feature-powerset
       working-directory: mdns-proto
   
   test:
