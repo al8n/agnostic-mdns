@@ -20,7 +20,7 @@ This crate provides a `no_std` [sans-I/O] implementation of the mDNS protocol.
 
 ## MSRV
 
-The Minimum Supported Rust Version (MSRV) for this crate is Rust 1.81. Any change to this MSRV will be accompanied by a minor version bump.
+The Minimum Supported Rust Version (MSRV) for this crate is Rust 1.85. Any change to this MSRV will be accompanied by a minor version bump.
 
 ## License
 
