@@ -21,8 +21,6 @@ use smallvec_wrapper::SmallVec;
 
 use super::Zone;
 
-const MAX_PAYLOAD_SIZE: usize = 9000;
-
 /// A closer for the [`Server`].
 #[derive(Debug, Clone)]
 pub struct Closer(Arc<AtomicBool>);
@@ -66,6 +64,7 @@ pub struct Server<Z> {
   v6_udp: Option<UdpSocket>,
   closer: Closer,
   log_empty_responses: bool,
+  max_payload_size: usize,
 }
 
 impl<Z> Server<Z>
@@ -107,6 +106,7 @@ where
         v6_udp: v6,
         closer: closer.clone(),
         log_empty_responses: opts.log_empty_responses,
+        max_payload_size: opts.max_payload_size,
       },
       closer,
     ))
@@ -126,9 +126,10 @@ where
       v6_udp,
       closer,
       log_empty_responses,
+      max_payload_size,
     } = self;
 
-    let mut buf = vec![0; MAX_PAYLOAD_SIZE];
+    let mut buf = Buffer::zerod(max_payload_size);
 
     loop {
       if closer.is_closed() {

@@ -21,8 +21,6 @@ const IPV6_MDNS: Ipv6Addr = Ipv6Addr::new(0xff02, 0, 0, 0, 0, 0, 0, 0xfb);
 const IPV4_SIZE: usize = core::mem::size_of::<Ipv4Addr>();
 const IPV6_SIZE: usize = core::mem::size_of::<Ipv6Addr>();
 const MDNS_PORT: u16 = 5353;
-// See RFC 6762, https://datatracker.ietf.org/doc/rfc6762/
-const MAX_PAYLOAD_SIZE: usize = 9000;
 const MAX_INLINE_PACKET_SIZE: usize = 1500;
 
 pub use mdns_proto::{error, proto::Label};
@@ -51,6 +49,7 @@ pub struct ServerOptions {
   pub(crate) ipv4_interface: Option<Ipv4Addr>,
   pub(crate) ipv6_interface: Option<u32>,
   pub(crate) log_empty_responses: bool,
+  pub(crate) max_payload_size: usize,
 }
 
 impl Default for ServerOptions {
@@ -68,6 +67,7 @@ impl ServerOptions {
       ipv4_interface: None,
       ipv6_interface: None,
       log_empty_responses: false,
+      max_payload_size: 1500,
     }
   }
 
@@ -166,6 +166,55 @@ impl ServerOptions {
   #[inline]
   pub const fn log_empty_responses(&self) -> bool {
     self.log_empty_responses
+  }
+
+  /// Returns the configured maximum payload size for mDNS message packets.
+  ///
+  /// This value limits how large each mDNS packet can be when sending queries or
+  /// receiving responses.
+  ///
+  /// Smaller values may be necessary on networks with MTU constraints or when
+  /// working with devices that have limited buffer sizes.
+  ///
+  /// Default is `1500` bytes.
+  ///
+  /// ## Example
+  ///
+  /// ```rust
+  /// use agnostic_mdns::QueryParam;
+  ///
+  /// let opts = ServerOptions::new().with_max_payload_size(1500);
+  /// ```
+  #[inline]
+  pub const fn max_payload_size(&self) -> usize {
+    self.max_payload_size
+  }
+
+  /// Sets the maximum payload size for mDNS message packets.
+  ///
+  /// This controls how large each mDNS packet can be when sending queries or
+  /// receiving responses.
+  ///
+  /// You might want to adjust this value to:
+  /// - Reduce the size to avoid IP fragmentation on networks with lower MTUs
+  /// - Match device-specific constraints in IoT environments
+  /// - Optimize for specific network conditions
+  ///
+  /// Default is `1500` bytes.
+  ///
+  /// ## Example
+  ///
+  /// ```rust
+  /// use agnostic_mdns::ServerOptions;
+  ///
+  /// let opts = ServerOptions::new().with_max_payload_size(1500);
+  ///
+  /// assert_eq!(opts.max_payload_size(), 1500);
+  /// ```
+  #[inline]
+  pub const fn with_max_payload_size(mut self, max_payload_size: usize) -> Self {
+    self.max_payload_size = max_payload_size;
+    self
   }
 }
 
@@ -465,7 +514,7 @@ impl<'a> QueryParam<'a> {
   /// use agnostic_mdns::QueryParam;
   ///
   /// let params = QueryParam::new("service._tcp".into())
-  ///  .with_max_payload_size(1024);
+  ///  .with_max_payload_size(1500);
   /// ```
   #[inline]
   pub const fn max_payload_size(&self) -> usize {

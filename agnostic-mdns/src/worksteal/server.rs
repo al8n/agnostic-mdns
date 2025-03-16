@@ -18,7 +18,7 @@ use smallvec_wrapper::SmallVec;
 use triomphe::Arc;
 
 use crate::{
-  Buffer, MAX_PAYLOAD_SIZE, MDNS_PORT, ServerOptions,
+  Buffer, MDNS_PORT, ServerOptions,
   utils::{multicast_udp4_socket, multicast_udp6_socket},
 };
 
@@ -69,6 +69,7 @@ where
           conn,
           zone.clone(),
           opts.log_empty_responses,
+          opts.max_payload_size,
           shutdown_rx.clone(),
         )?),
         Err(e) => {
@@ -88,6 +89,7 @@ where
           conn,
           zone.clone(),
           opts.log_empty_responses,
+          opts.max_payload_size,
           shutdown_rx.clone(),
         )?),
         Err(e) => {
@@ -165,6 +167,7 @@ where
   /// Indicates the server should print an informative message
   /// when there is an mDNS query for which the server has no response.
   log_empty_responses: bool,
+  max_payload_size: usize,
   endpoint: SlabEndpoint,
   shutdown_rx: Receiver<()>,
 }
@@ -178,6 +181,7 @@ where
     conn: N::UdpSocket,
     zone: Arc<Z>,
     log_empty_responses: bool,
+    max_payload_size: usize,
     shutdown_rx: Receiver<()>,
   ) -> io::Result<Self> {
     conn.local_addr().map(|local_addr| Self {
@@ -185,6 +189,7 @@ where
       zone,
       local_addr,
       log_empty_responses,
+      max_payload_size,
       endpoint: SlabEndpoint::new(),
       shutdown_rx,
     })
@@ -198,9 +203,10 @@ where
       mut endpoint,
       local_addr,
       log_empty_responses,
+      max_payload_size,
     } = self;
 
-    let mut buf = vec![0; MAX_PAYLOAD_SIZE];
+    let mut buf = Buffer::zerod(max_payload_size);
 
     tracing::info!(local=%local_addr, service=?zone, "mdns server: listening mDNS packets");
     loop {
@@ -221,7 +227,6 @@ where
             tracing::trace!(from=%addr, data=?data, "mdns server: received packet");
 
             Self::handle_query(&mut endpoint, &conn, addr, data, &zone, log_empty_responses).await;
-            buf.clear();
             ControlFlow::Continue(false)
           }
         }
