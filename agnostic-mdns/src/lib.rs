@@ -1,5 +1,5 @@
-#![doc = include_str!("../../README.md")]
-// #![forbid(unsafe_code)]
+#![doc = include_str!("../README.md")]
+#![forbid(unsafe_code)]
 #![deny(missing_docs)]
 #![allow(unexpected_cfgs)]
 #![cfg_attr(docsrs, feature(doc_cfg))]
@@ -23,11 +23,11 @@ const IPV6_SIZE: usize = core::mem::size_of::<Ipv6Addr>();
 const MDNS_PORT: u16 = 5353;
 // See RFC 6762, https://datatracker.ietf.org/doc/rfc6762/
 const MAX_PAYLOAD_SIZE: usize = 9000;
-const MAX_INLINE_PACKET_SIZE: usize = 512;
+const MAX_INLINE_PACKET_SIZE: usize = 1500;
 
 pub use mdns_proto::{error, proto::Label};
 
-/// synchronous mDNS implementation
+/// synchronous mDNS server implementation
 pub mod sync;
 
 /// Generic asynchronous mDNS implementation for work stealing runtimes
@@ -183,6 +183,7 @@ pub struct QueryParam<'a> {
   disable_ipv4: bool,
   // Whether to disable usage of IPv6 for MDNS operations. Does not affect discovered addresses.
   disable_ipv6: bool,
+  max_payload_size: usize,
 }
 
 impl<'a> QueryParam<'a> {
@@ -199,6 +200,7 @@ impl<'a> QueryParam<'a> {
       disable_ipv4: false,
       disable_ipv6: false,
       cap: None,
+      max_payload_size: 1500,
     }
   }
 
@@ -445,6 +447,57 @@ impl<'a> QueryParam<'a> {
   /// ```
   pub const fn disable_ipv6(&self) -> bool {
     self.disable_ipv6
+  }
+
+  /// Returns the configured maximum payload size for mDNS message packets.
+  ///
+  /// This value limits how large each mDNS packet can be when sending queries or
+  /// receiving responses.
+  ///
+  /// Smaller values may be necessary on networks with MTU constraints or when
+  /// working with devices that have limited buffer sizes.
+  ///
+  /// Default is `1500` bytes.
+  ///
+  /// ## Example
+  ///
+  /// ```rust
+  /// use agnostic_mdns::QueryParam;
+  ///
+  /// let params = QueryParam::new("service._tcp".into())
+  ///  .with_max_payload_size(1024);
+  /// ```
+  #[inline]
+  pub const fn max_payload_size(&self) -> usize {
+    self.max_payload_size
+  }
+
+  /// Sets the maximum payload size for mDNS message packets.
+  ///
+  /// This controls how large each mDNS packet can be when sending queries or
+  /// receiving responses.
+  ///
+  /// You might want to adjust this value to:
+  /// - Reduce the size to avoid IP fragmentation on networks with lower MTUs
+  /// - Match device-specific constraints in IoT environments
+  /// - Optimize for specific network conditions
+  ///
+  /// Default is `1500` bytes.
+  ///
+  /// ## Example
+  ///
+  /// ```rust
+  /// use agnostic_mdns::QueryParam;
+  ///
+  /// let params = QueryParam::new("service._tcp".into())
+  /// .with_max_payload_size(1500);
+  ///
+  /// assert_eq!(params.max_payload_size(), 1500);
+  /// ```
+  #[inline]
+  pub const fn with_max_payload_size(mut self, max_payload_size: usize) -> Self {
+    self.max_payload_size = max_payload_size;
+    self
   }
 
   /// Returns the channel capacity for the [`Lookup`] stream.

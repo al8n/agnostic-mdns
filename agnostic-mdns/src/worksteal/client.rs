@@ -235,7 +235,7 @@ where
         params.timeout,
         entry_tx.clone(),
         shutdown_rx,
-        1500,
+        params.max_payload_size,
       )
       .await
     {
@@ -290,7 +290,9 @@ impl<N: Net> Clients<N> {
     let msg = Message::new(0, Flags::new(), &mut qs, &mut [], &mut [], &mut []);
     let space_needed = msg.space_needed();
     let mut buf = Buffer::zerod(space_needed);
-    let len = msg.write(&mut buf).unwrap();
+    let len = msg
+      .write(&mut buf)
+      .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
 
     // Map the in-progress responses
     let inprogress = Arc::new(Mutex::new(InprogressCache::new()));
@@ -346,7 +348,17 @@ impl<N: Net> Clients<N> {
                   let msg = Message::new(0, Flags::new(), &mut qs, &mut [], &mut [], &mut []);
                   let space_needed = msg.space_needed();
                   let mut buf = Buffer::zerod(space_needed);
-                  let len = msg.write(&mut buf).unwrap();
+                  let len = match msg.write(&mut buf).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e)) {
+                    Ok(len) => len,
+                    Err(e) => {
+                      tracing::error!(err=%e, "mdns client: failed to encode message");
+                      if let Err(e) = tx.send(Err(e)).await {
+                        tracing::error!(err=%e, "mdns client: failed to send result");
+                      }
+
+                      continue;
+                    }
+                  };
 
                   if let Some(ref client) = self.v4 {
                     if let Some((_, ref conn)) = client.unicast_conn {
@@ -558,7 +570,7 @@ impl<N: Net> Client<N> {
     shutdown_rx: Receiver<()>,
     max_payload_size: usize,
   ) {
-    let mut buf = vec![0u8; max_payload_size];
+    let mut buf = Buffer::zerod(max_payload_size);
 
     tracing::debug!(local_addr=%local_addr, "mdns client: starting to listen response");
 

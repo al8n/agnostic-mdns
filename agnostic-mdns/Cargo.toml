@@ -10,6 +10,7 @@ license = "MIT OR Apache-2.0"
 rust-version = "1.85.0"
 categories = ["network-programming"]
 keywords = ["mdns", "dns-sd", "zeroconf", "agnostic", "async-mdns"]
+readme = "README.md"
 
 [[example]]
 name = "tokio"

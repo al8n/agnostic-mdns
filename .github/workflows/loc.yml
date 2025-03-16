@@ -24,6 +24,9 @@ on:
 jobs:
   loc:
     runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        crates: ["mdns-proto", "agnostic-mdns"]
     steps:
       - uses: actions/checkout@v4
 
@@ -37,21 +40,23 @@ jobs:
         run: |
           cargo install tokeit --force
       
-      - name: Count total lines of code
+      - name: Count lines of code in subcrates
         run: |
           tokeit
-      - name: Upload total loc to GitHub Gist
+        working-directory: ${{ matrix.crates }}
+
+      - name: Upload subcrates loc to GitHub Gist
         uses: actions/github-script@v7
         with:
           github-token: ${{ secrets.GIST_PAT }}
           script: |
             const fs = require('fs');
-            const output = fs.readFileSync('tokeit.json', 'utf8');
+            const output = fs.readFileSync('${{ matrix.crates }}/tokeit.json', 'utf8');
             const gistId = '327b2a8aef9003246e45c6e47fe63937';
             await github.rest.gists.update({
               gist_id: gistId,
               files: {
-                "agnostic-mdns": {
+                "${{ matrix.crates }}": {
                   content: output
                 }
               }

@@ -68,7 +68,6 @@ use mdns_proto::{
 /// Class.
 ///
 /// ```
-// #[cfg_attr(feature = "serde-config", derive(Deserialize, Serialize))]
 #[derive(PartialEq, Eq, Hash, Clone)]
 #[allow(clippy::upper_case_acronyms)]
 pub struct SRV {

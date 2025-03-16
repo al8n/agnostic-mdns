@@ -1,4 +1,12 @@
+#![doc = include_str!("../README.md")]
 #![cfg_attr(not(feature = "std"), no_std)]
+#![forbid(unsafe_code)]
+#![deny(missing_docs)]
+#![allow(unexpected_cfgs)]
+#![cfg_attr(docsrs, feature(doc_cfg))]
+#![cfg_attr(docsrs, allow(unused_attributes))]
+#![allow(clippy::needless_return)]
+#![allow(unreachable_code)]
 
 #[cfg(feature = "slab")]
 pub use slab;
@@ -17,7 +25,7 @@ pub mod client;
 /// An implementation of the mDNS protocol
 pub mod proto {
   pub use super::srv::Srv;
-  pub use super::txt::Txt;
+  pub use super::txt::{Str, Strings, Txt};
   pub use dns_protocol::{
     Cursor, Deserialize, Flags, Header, Label, LabelSegment, Message, MessageType, Opcode,
     Question, ResourceRecord, ResourceType, ResponseCode, Serialize,

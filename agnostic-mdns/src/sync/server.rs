@@ -112,6 +112,11 @@ where
     ))
   }
 
+  /// Returns a reference to the zone.
+  pub fn zone(&self) -> &Z {
+    &self.zone
+  }
+
   /// Runs the server, blocking the current thread until the server is stopped.
   pub fn run(self) {
     let Self {

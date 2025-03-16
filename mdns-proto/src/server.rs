@@ -133,6 +133,7 @@ impl<'innards> Response<'innards> {
   }
 }
 
+/// An outgoing event
 pub struct Outgoing {
   flags: Flags,
   unicast: bool,
