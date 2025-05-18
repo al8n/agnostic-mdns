@@ -278,7 +278,7 @@ where
           if log_empty_responses && (answers.is_empty() && additionals.is_empty()) {
             tracing::info!(
               class=%question.class(),
-              type=?question.ty(),
+              ty=?question.ty(),
               name=%question.name(),
               "mdns server: no responses for question",
             );
